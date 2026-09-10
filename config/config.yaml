@@ -1,0 +1,25 @@
+# Configuration for UCI Banking Machine Learning Project
+
+dataset:
+  uci_id: 222
+  name: "Bank Marketing"
+  target_column: "y"
+  positive_class: "yes"
+
+paths:
+  raw_data_dir: "data/raw"
+  processed_data_dir: "data/processed"
+  models_dir: "models"
+  raw_features_file: "data/raw/bank_features.csv"
+  raw_targets_file: "data/raw/bank_targets.csv"
+  processed_train_file: "data/processed/train.parquet"
+  processed_test_file: "data/processed/test.parquet"
+
+split:
+  test_size: 0.2
+  random_state: 42
+  stratify: true
+
+model:
+  random_state: 42
+  cv_folds: 5

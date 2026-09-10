@@ -41,18 +41,29 @@ def drop_duration(X: pd.DataFrame) -> pd.DataFrame:
 class PreCallFeatureEngineer(BaseEstimator, TransformerMixin):
     """Scikit-learn compatible transformer engineering legitimate pre-call features.
 
-    Transformations:
-    - Guarantees exclusion of post-call 'duration' target leakage.
-    - was_previously_contacted: Binary indicator for prior campaign history (pdays != -1).
-    - pdays_recency: Non-negative transformed recency handling -1 explicitly as 0 (via log1p(max(pdays, 0))),
-      avoiding distortion of the -1 sentinel on a continuous scale.
-    - prior_success: Binary indicator for prior campaign success (poutcome == 'success').
-    - has_debt_burden: Binary indicator for dual housing and personal debt (housing == 'yes' & loan == 'yes').
-    - negative_balance_flag: Binary indicator for accounts with balance < 0.
-    - balance_log: Signed log1p transformation (sign(balance) * log1p(|balance|)) to accommodate
-      severe financial skewness (-€8,019 to +€102,127) without arbitrary truncation.
-    - campaign: Preserves raw contact counts without artificial capping to retain genuine outreach
-      frequency variation while documenting diminishing returns observed in Phase 1.
+    Methodological & Contractual Guarantees:
+    - Leakage Protection: Enforces strict post-call leakage protection for the supervised pre-call
+      pipeline by excluding 'duration'. Future unsupervised segmentation/clustering pipelines must
+      adhere to this exact same pre-call feature contract to prevent post-call leakage.
+    - Field Normalization: The source UCI dataset column imported as 'day_of_week' contains integer
+      values from 1 to 31, representing the day of the month. It is normalized to 'contact_day_of_month'.
+    - Prior Contact Dynamics:
+      - was_previously_contacted: Binary indicator for prior campaign history (pdays != -1).
+      - pdays_recency: Non-negative transformed recency handling -1 explicitly as 0 (via log1p(max(pdays, 0))),
+        avoiding distortion of the -1 sentinel on a continuous scale.
+      - prior_success: Binary indicator for prior campaign success (poutcome == 'success').
+      - Note on Missing poutcome: While missing poutcome predominantly corresponds to uncontacted clients
+        (99.986% of missing records), exactly 5 records in the dataset have prior contacts (pdays > 0)
+        with unrecorded outcomes. Missing values are preserved as 'unknown' rather than assumed to be
+        exclusively uncontacted or imputed to 'failure'.
+    - Financial Burden & Balance:
+      - has_debt_burden: Binary indicator for dual housing and personal debt (housing == 'yes' & loan == 'yes').
+      - negative_balance_flag: Binary indicator for accounts with balance < 0.
+      - balance_log: Signed log1p transformation (sign(balance) * log1p(|balance|)) accommodating
+        financial skewness (-€8,019 to +€102,127) without arbitrary truncation.
+    - Campaign Outreach:
+      - campaign: Preserves raw contact counts without artificial capping to retain genuine outreach
+        frequency variation while documenting diminishing returns observed in Phase 1.
     """
 
     def __init__(self, drop_leakage: bool = True):
@@ -68,7 +79,12 @@ class PreCallFeatureEngineer(BaseEstimator, TransformerMixin):
         if self.drop_leakage and "duration" in X_out.columns:
             X_out = X_out.drop(columns=["duration"])
 
-        # 2. Prior contact features
+        # 2. Normalize misleading source column: day_of_week (1-31) -> contact_day_of_month
+        if "day_of_week" in X_out.columns and "contact_day_of_month" not in X_out.columns:
+            X_out["contact_day_of_month"] = X_out["day_of_week"]
+            X_out = X_out.drop(columns=["day_of_week"])
+
+        # 3. Prior contact features
         if "pdays" in X_out.columns:
             pdays_series = X_out["pdays"].fillna(-1)
             X_out["was_previously_contacted"] = (pdays_series != -1).astype(int)
@@ -78,7 +94,7 @@ class PreCallFeatureEngineer(BaseEstimator, TransformerMixin):
         if "poutcome" in X_out.columns:
             X_out["prior_success"] = (X_out["poutcome"] == "success").astype(int)
 
-        # 3. Financial burden & balance features
+        # 4. Financial burden & balance features
         if "housing" in X_out.columns and "loan" in X_out.columns:
             has_debt = (X_out["housing"] == "yes") & (X_out["loan"] == "yes")
             X_out["has_debt_burden"] = has_debt.astype(int)
@@ -88,8 +104,7 @@ class PreCallFeatureEngineer(BaseEstimator, TransformerMixin):
             X_out["negative_balance_flag"] = (bal < 0).astype(int)
             X_out["balance_log"] = (np.sign(bal) * np.log1p(np.abs(bal))).astype(float)
 
-        # Note on campaign: We do not clip campaign contacts arbitrarily; raw count is retained
-        # to reflect true outreach attempts without artificial data distortion.
+        # Note on campaign: Raw count is retained to reflect true outreach attempts without artificial data distortion.
 
         return X_out
 

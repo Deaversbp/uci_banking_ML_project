@@ -73,6 +73,7 @@ def test_pre_call_feature_engineer_leakage_and_features():
         "balance": [-100, 5000, 0],
         "housing": ["yes", "no", "yes"],
         "loan": ["yes", "no", "no"],
+        "day_of_week": [5, 15, 31],  # Misleading UCI source column (contains 1-31 day of month)
         "campaign": [2, 1, 15],
         "pdays": [-1, 120, -1],
         "previous": [0, 3, 0],
@@ -86,22 +87,27 @@ def test_pre_call_feature_engineer_leakage_and_features():
     # 1. Leakage assertion: duration must NEVER be present
     assert "duration" not in out.columns
 
-    # 2. Prior contact features
+    # 2. Source column normalization: day_of_week (1-31) -> contact_day_of_month
+    assert "day_of_week" not in out.columns
+    assert "contact_day_of_month" in out.columns
+    assert out["contact_day_of_month"].tolist() == [5, 15, 31]
+
+    # 3. Prior contact features
     assert out["was_previously_contacted"].tolist() == [0, 1, 0]
     assert out["pdays_recency"].iloc[0] == 0.0  # -1 handled as 0
     assert out["pdays_recency"].iloc[1] == pytest.approx(np.log1p(120), rel=1e-3)
     assert out["prior_success"].tolist() == [0, 1, 0]
 
-    # 3. Debt burden
+    # 4. Debt burden
     assert out["has_debt_burden"].tolist() == [1, 0, 0]
 
-    # 4. Negative balance & signed log
+    # 5. Negative balance & signed log
     assert out["negative_balance_flag"].tolist() == [1, 0, 0]
     assert out["balance_log"].iloc[0] == pytest.approx(-np.log1p(100), rel=1e-3)
     assert out["balance_log"].iloc[1] == pytest.approx(np.log1p(5000), rel=1e-3)
     assert out["balance_log"].iloc[2] == 0.0
 
-    # 5. Campaign: raw count must not be blindly capped
+    # 6. Campaign: raw count must not be blindly capped
     assert out["campaign"].tolist() == [2, 1, 15]
 
 
@@ -214,3 +220,12 @@ def test_business_rule_baseline():
     assert eval_results["conversions_at_k"] == 2
     assert eval_results["precision_at_k"] == 1.0
     assert eval_results["lift_at_k"] == pytest.approx(1.0 / 0.5)  # 2.0x lift
+
+
+def test_compute_capacity_k():
+    """Verify that capacity k is derived proportionally from the global capacity fraction."""
+    from src.models.train import compute_capacity_k
+    # 45,211 total population, 5,000 global capacity -> ~11.059%
+    assert compute_capacity_k(n_samples=9042, total_population=45211, full_capacity=5000) == 1000
+    assert compute_capacity_k(n_samples=45211, total_population=45211, full_capacity=5000) == 5000
+    assert compute_capacity_k(n_samples=1000, total_population=10000, full_capacity=1000) == 100

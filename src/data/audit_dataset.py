@@ -291,9 +291,12 @@ def run_full_data_audit() -> Dict[str, Any]:
     print(f"  1. Random Selection   : ~{target_prev['expected_conversions_random']:,} conversions (11.70% precision, 1.00x lift)")
     print(f"  2. Business-Rule Benchmark: ~1,664 conversions (33.28% precision, 2.84x lift)")
     print("-" * 70)
-    print(f"TARGET LEAKAGE CHECK    : duration ROC-AUC = {leakage['duration_roc_auc']:.4f}")
+    print(f"LEAKAGE PROTECTION CHECK: duration ROC-AUC = {leakage['duration_roc_auc']:.4f} (Quarantined in supervised pipeline)")
     print(f"Median Duration         : 'no' = {leakage['duration_by_target']['no']['50%']:.0f}s | 'yes' = {leakage['duration_by_target']['yes']['50%']:.0f}s")
     print(f"Duration = 0s Check     : {leakage['zero_duration_count']} calls (conversion rate = {leakage['zero_duration_conv_rate']*100:.1f}%)")
+    print("-" * 70)
+    print("FIELD NORMALIZATION NOTE:")
+    print("  'day_of_week' in source ID 222 records day-of-month (1-31). Normalized to 'contact_day_of_month'.")
     print("-" * 70)
     print("CAMPAIGN OUTREACH ANALYSIS (Observational Association):")
     for _, row in fatigue.iterrows():
@@ -309,7 +312,7 @@ def run_full_data_audit() -> Dict[str, Any]:
         print(f"  {row['prior_outcome']:<10} : {row['volume']:>6,} records | Conv Rate: {row['conversion_rate']*100:>5.2f}%")
     print("-" * 70)
     print(f"MISSING (NaN) VALUES    : {quality['nan_counts']}")
-    print(f"REPEATED PROFILES       : {quality['repeated_demographic_profiles']:,} ({quality['repeated_demographic_pct']*100:.2f}%) [Demographic/financial profile duplicates, not proven customer identities]")
+    print(f"REPEATED PROFILES       : {quality['repeated_demographic_profiles']:,} ({quality['repeated_demographic_pct']*100:.2f}%) [Demographic/financial profile overlaps, not verified customer identities]")
     print("=" * 70 + "\n")
 
     return {

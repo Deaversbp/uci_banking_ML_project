@@ -1,11 +1,14 @@
 """Authoritative generator for notebooks/01_data_exploration.ipynb.
 
 This script is the single authoritative source of truth for generating the exploratory
-data analysis notebook. Reconciled with Phase 1 forensic audit findings:
-- Framing of campaign tiers and monthly conversion as observational associations
-- Investigation of the 5 pdays != -1 and poutcome missingness exceptions
-- Repeated demographic/financial profile analysis (acknowledging absence of unique customer IDs)
-- Two-tier baseline comparison: Random Selection (585 conv) vs Business-Rule Heuristic (~1,664 conv)
+data analysis notebook. Reconciled with Phase 1 forensic audit and methodological hardening:
+- Clarifies that the supervised pre-call pipeline is leakage-protected (and requires the future
+  unsupervised pipeline to use the exact same pre-call feature contract).
+- Normalizes misleading source column 'day_of_week' (1-31) to 'contact_day_of_month'.
+- Frames campaign tiers and monthly conversion as observational associations (avoiding causal claims).
+- Documents the 5 pdays != -1 and poutcome missingness exceptions without absolute claims.
+- Evaluates repeated demographic/financial profiles acknowledging absence of stable client IDs.
+- Establishes the two-tier baseline (Random Selection: 585 conv vs Business-Rule Heuristic: ~1,664 conv).
 """
 import json
 from pathlib import Path
@@ -53,14 +56,13 @@ A retail bank conducts outbound telemarketing campaigns to sell term deposits. D
 1. **Supervised Optimization**: Identify and rank-order leads by conversion probability to maximize subscriptions within the 5,000-call quota.
 2. **Unsupervised Discovery**: Uncover actionable customer segments to understand who the campaign reaches and tailor messaging.
 
-### Phase 1 Audit Mandate:
-Perform a comprehensive data audit and exploratory analysis **before building any models**. Specifically investigate:
-- **Baseline economics & two-tier benchmarks**: Random selection (~585 conversions) and Business-Rule Heuristic (~1,664 conversions).
-- **Target leakage** in `duration`: Proof of post-call leakage and justification for strict exclusion.
-- **Campaign outreach dynamics**: Observational association across contact frequency tiers without causal leaps.
-- **Prior contact history**: Dynamics of `pdays`, `previous`, and `poutcome`, including documentation of alignment exceptions.
-- **Data quality & missingness**: Preserving informative categorical missing states (`unknown`).
-- **Repeated demographic/financial profiles**: Assessing profile overlap without assuming proven customer identities.""")
+### Methodological & Audit Standards:
+- **Leakage Protection**: The supervised pre-call pipeline is leakage-protected by programmatically quarantining `duration`. The future unsupervised pipeline must adhere to this exact same pre-call feature contract.
+- **Two-Tier Benchmarks**: Random selection (~585 conversions) and the frozen Business-Rule Heuristic (~1,664 conversions).
+- **Campaign Outreach Dynamics**: Observational association across contact frequency tiers without causal leaps.
+- **Prior Contact History**: Dynamics of `pdays`, `previous`, and `poutcome`, explicitly documenting the 5 alignment exceptions.
+- **Field Normalization**: Clarifying that `day_of_week` in UCI ID 222 actually contains day-of-month (1–31) integers.
+- **Validation Discipline**: Model selection conducted strictly on validation data using Conversions@capacity as primary metric; untouched test set evaluated once.""")
 
 # Setup & Imports
 add_code("""import sys
@@ -87,8 +89,12 @@ from src.data.load_data import load_bank_marketing_data
 from src.models.baseline import evaluate_random_baseline, evaluate_business_rule_baseline
 print("Libraries loaded successfully!")""")
 
-# Ingestion
-add_md("""## 1. Data Ingestion & Schema Verification""")
+# Ingestion & Schema
+add_md("""## 1. Data Ingestion & Schema Verification
+
+> [!NOTE]
+> **Source Column Naming Issue**: The source UCI dataset column imported as `day_of_week` contains values from 1 to 31. This represents the **day of the month**, not day of the week (Monday–Sunday). Our pre-call pipeline normalizes this internally to `contact_day_of_month`.""")
+
 add_code("""# Load cached dataset
 X, y = load_bank_marketing_data()
 df = X.copy()
@@ -96,6 +102,7 @@ df['target'] = y
 
 print(f"Total Observations (Records): {len(df):,}")
 print(f"Total Raw Features: {X.shape[1]}")
+print(f"day_of_week min: {df['day_of_week'].min()}, max: {df['day_of_week'].max()} (Day-of-Month values)")
 print("\\nFeatures Data Types:")
 print(df.dtypes)
 df.head(5)""")
@@ -107,9 +114,9 @@ add_md("""## 2. Target Prevalence & The Two-Tier Baseline (5,000-Call Quota)
 With an eligible population of 45,211 contact records and a positive prevalence of **11.70%**, our baselines under a **5,000 call capacity constraint** are:
 1. **Random Outreach Baseline**: Uniform random selection yields expected conversions:
    $$\\mathbb{E}[\\text{Conversions}] = 5,000 \\times 0.1170 \\approx 585 \\text{ subscriptions (11.70% precision, 1.00x lift)}$$
-2. **Business-Rule Heuristic Baseline**: A sensible pre-call heuristic prioritizing prior campaign success (`poutcome == 'success'`), prior contact (`pdays != -1`) without loan burden, and liquid balance tie-breaking achieves **~1,664 conversions (33.28% precision, 2.84x lift)**.
+2. **Business-Rule Heuristic Baseline**: A frozen pre-call heuristic prioritizing prior campaign success (`poutcome == 'success'`), prior contact (`pdays != -1`) without loan burden, and liquid balance tie-breaking achieves **~1,664 conversions (33.28% precision, 2.84x lift)**.
 
-> **Key Rule**: Any machine learning model in Phase 3 must beat **both** benchmarks to provide genuine business value.""")
+> **Key Rule**: Machine learning models in Phase 3 must beat **both** benchmarks to demonstrate commercial utility.""")
 
 add_code("""# Target prevalence
 target_counts = df['target'].value_counts()
@@ -139,10 +146,10 @@ plt.tight_layout()
 plt.show()""")
 
 # Duration Leakage
-add_md("""## 3. Forensic Leakage Investigation: `duration`
+add_md("""## 3. Leakage Protection Investigation: `duration`
 
 > [!WARNING]
-> **UCI Documentation Warning**: Call duration is strictly known **only after** the phone call has been conducted. Including `duration` introduces strong post-call target leakage (ROC-AUC = 0.8076 on duration alone) that completely invalidates pre-call lead scoring in production.""")
+> **Pre-Call Pipeline Contract**: Call duration is strictly post-call information. An univariate model on `duration` alone scores an ROC-AUC of 0.8076. The supervised pre-call pipeline is leakage-protected by programmatically stripping `duration`. Any future unsupervised segmentation pipeline must adhere to this exact same pre-call feature contract.""")
 
 add_code("""# 1. ROC-AUC of duration alone
 y_binary = (df['target'] == 'yes').astype(int)
@@ -185,7 +192,7 @@ plt.show()""")
 add_md("""## 4. Campaign Outreach Dynamics (`campaign`)
 
 ### Observational Association:
-Empirical conversion rates decline across higher contact frequency tiers. Rather than proving that calling someone causes them to decline, this observational pattern likely reflects a **negative selection effect**: interested prospects convert on early contacts (1–3), while recalcitrant prospects accumulate repeated contact records precisely because they have not subscribed.""")
+Empirical conversion rates decline across higher contact frequency tiers. Rather than proving that calling someone causes them to decline, this observational pattern likely reflects a **negative selection effect**: interested prospects convert on early contacts (1–3), while recalcitrant prospects accumulate repeated contact records precisely because they have not subscribed. Raw counts are preserved in the pre-call pipeline without arbitrary clipping.""")
 
 add_code("""bins = [0, 1, 2, 3, 5, 10, 100]
 labels = ["1 contact", "2 contacts", "3 contacts", "4-5 contacts", "6-10 contacts", ">10 contacts"]
@@ -226,7 +233,7 @@ add_md("""## 5. Prior Campaign History: `pdays`, `previous`, and `poutcome`
 - `pdays = -1` indicates clients never previously contacted (**81.74%** of records, converting at **9.16%**).
 - Prior contact (`pdays != -1`) converts at **23.07%** (2.5x higher).
 - Prior success (`poutcome == 'success'`) converts at **64.73%** (5.5x higher than average).
-- **Audit Discovery**: Exactly **5 records** have `pdays != -1` yet `poutcome` is `NaN` (repeat contacts with unrecorded prior outcome in CRM).""")
+- **Non-Absolute Relationship**: While missing `poutcome` predominantly corresponds to uncontacted clients (99.986%), exactly **5 records** have `pdays > 0` yet `poutcome` is `NaN` (repeat contacts with unrecorded prior CRM outcome).""")
 
 add_code("""df_prior = df.copy()
 df_prior['contact_history'] = np.where(df_prior['pdays'] == -1, 'Never Contacted (81.7%)', 'Previously Contacted (18.3%)')
@@ -239,7 +246,7 @@ pdays_stats = df_prior.groupby('contact_history')['target'].agg(
 print("--- Prior Contact Cohort Comparison ---")
 print(pdays_stats.to_string(index=False))
 
-# Identify exceptions
+# Identify the 5 exceptions
 exceptions = df_prior[(df_prior['pdays'] != -1) & (df_prior['poutcome'].isna())]
 print(f"\\nExceptions where pdays != -1 but poutcome is NaN: {len(exceptions)} records")
 print(exceptions[['pdays', 'previous', 'poutcome', 'target']])
@@ -300,8 +307,8 @@ plt.show()""")
 # Data Quality & Repeated Profiles
 add_md("""## 7. Data Quality, Missingness & Repeated Demographic Profiles
 
-- Missing values: Informative missingness in `poutcome` (81.7%) and `contact` (28.8%) must be preserved via explicit categories (`unknown`).
-- Repeated demographic/financial profiles: In the absence of unique client IDs, identical profiles represent repeated demographic combinations across contact events rather than verified customer identities.""")
+- Missing values: Informative missingness in `poutcome` (81.7%) and `contact` (28.8%) is preserved via an explicit `unknown` category.
+- Repeated demographic/financial profiles: 4,163 records (9.21%) share identical demographic/financial features. Due to the lack of unique customer IDs, these reflect profile overlaps across contact events rather than proven unique customer identities.""")
 
 add_code("""# Missing values
 print("Missing (NaN) Counts:")
@@ -312,22 +319,20 @@ print(nan_counts)
 demo_cols = ['age', 'job', 'marital', 'education', 'default', 'balance', 'housing', 'loan']
 n_duplicates = df.duplicated(subset=demo_cols).sum()
 print(f"\\nRepeated demographic/financial profiles: {n_duplicates:,} out of {len(df):,} ({n_duplicates/len(df)*100:.2f}%)")
-print("Validation Note: Stratified random splitting is used with documented limitations due to absence of client IDs and timestamps.")""")
+print("Validation Note: Stratified random splitting with validation-split model selection is employed.")""")
 
-# Conclusion & Phase 2 Blueprint
+# Summary & Phase 2 Blueprint
 add_md("""## 8. Summary of Phase 1 Findings & Phase 2 Architecture
 
-### Key Audit Conclusions:
-1. **Capacity Benchmarks**: Under a 5,000-call quota, Random Selection yields **585 conversions** (11.70%), while the Business-Rule Benchmark yields **1,664 conversions** (33.28%, 2.84x lift).
-2. **Leakage Elimination**: `duration` (ROC-AUC = 0.8076) is strictly post-call information and is programmatically excluded from all pre-call pipelines.
-3. **Primary Predictive Drivers**:
-   - `poutcome == 'success'` converts at **64.73%** (5.5x baseline).
-   - Past contact (`pdays != -1`) converts at **23.07%** (2.5x baseline).
-4. **Data Preprocessing Directives for Phase 2**:
-   - Drop `duration` via `PreCallFeatureEngineer`.
-   - Engineer `was_previously_contacted`, non-negative `pdays_recency`, `has_debt_burden`, and signed `balance_log`.
-   - Treat `'unknown'` / NaN as an explicit categorical state for `poutcome` and `contact`.
-   - Rank and evaluate models on **PR-AUC**, **Precision@5,000**, and **Lift@5,000**.""")
+### Key Methodological Standards:
+1. **Capacity Benchmarks**: Under the 5,000-call quota, Random Selection yields **585 conversions** (11.70%), while the Business-Rule Benchmark yields **1,664 conversions** (33.28%, 2.84x lift).
+2. **Leakage Protection**: `duration` (ROC-AUC = 0.8076) is quarantined in the pre-call pipeline. The future unsupervised pipeline must adhere to this exact same pre-call feature contract.
+3. **Validation Strategy**: Model selection is performed strictly on validation data using **Conversions@capacity** / **Precision@capacity** as the primary decision metric. The holdout test set is evaluated exactly once.
+4. **Feature Normalization & Engineering**:
+   - `day_of_week` (1-31) normalized to `contact_day_of_month`.
+   - `was_previously_contacted`, non-negative `pdays_recency`, `has_debt_burden`, `negative_balance_flag`, signed `balance_log`.
+   - Raw `campaign` counts preserved.
+   - `unknown` preserved as an explicit categorical state for `poutcome` and `contact`.""")
 
 output_path = Path("notebooks/01_data_exploration.ipynb")
 with open(output_path, "w", encoding="utf-8") as f:

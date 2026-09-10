@@ -2,8 +2,8 @@
 
 **Project**: UCI Bank Marketing Term Deposit Outreach Optimization  
 **Author**: Machine Learning & Analytics Team  
-**Date**: September 2026 (Updated Post-Reconciliation)  
-**Status**: Completed & Verified  
+**Date**: September 2026 (Updated Post-Reconciliation & Hardening)  
+**Status**: Completed & Methodologically Hardened  
 **Deliverable Type**: Forensic Data Audit Report (Phase 1)
 
 ---
@@ -27,8 +27,8 @@ Crucially, **beating random selection is necessary but insufficient**. A compete
 | Outreach Strategy | Method / Logic | Expected Conversions @ 5,000 Calls | Precision @ 5,000 | Lift @ 5,000 |
 | :--- | :--- | :--- | :--- | :--- |
 | **Random Baseline** | Uniform random selection from eligible pool | **~585 accounts** | **11.70%** | **1.00x** |
-| **Business-Rule Baseline** | Heuristic: Prior success (`poutcome == 'success'`), then prior contact (`pdays != -1`) without loans, tie-broken by `balance` | **~1,664 accounts** | **33.28%** | **2.84x** |
-| **Target ML Models (Phase 3)** | Supervised rank-ordering optimizing PR-AUC & Precision@k | **Target: >2,000 accounts** | **Target: >40.00%** | **Target: >3.50x** |
+| **Business-Rule Baseline** | Frozen Heuristic: Prior success (`poutcome == 'success'`), then prior contact (`pdays != -1`) without loans, tie-broken by `balance` | **~1,664 accounts** | **33.28%** | **2.84x** |
+| **Target ML Models (Phase 3)** | Supervised rank-ordering optimizing Conversions@k & PR-AUC | **Target: >2,000 accounts** | **Target: >40.00%** | **Target: >3.50x** |
 
 > [!IMPORTANT]
 > A machine learning model that produces 1,200 conversions beats random outreach (585), but delivers negative business value compared to a simple, transparent business heuristic (1,664). All supervised models in Phase 3 will be evaluated against both hurdle rates.
@@ -50,10 +50,10 @@ The dataset comprises **45,211 contact records** with **16 raw feature attribute
 | `housing` | Object | Financial | 0 (0.0%) | Housing loan? (`yes`, `no`). |
 | `loan` | Object | Financial | 0 (0.0%) | Personal loan? (`yes`, `no`). |
 | `contact` | Object | Campaign | 13,020 (28.8%) | Contact communication type (`cellular`, `telephone`, `unknown`). |
-| `day_of_week` | Integer | Campaign | 0 (0.0%) | Last contact day of the month (1 - 31). |
+| `contact_day_of_month` *(imported as `day_of_week`)* | Integer | Campaign | 0 (0.0%) | Day of the month (1 - 31). Source column in UCI ID 222 was named `day_of_week` despite recording 1–31 calendar days. Normalized internally. |
 | `month` | Object | Campaign | 0 (0.0%) | Last contact month of year (`jan` - `dec`). |
-| `duration` | Integer | **POST-CALL** | 0 (0.0%) | Last contact duration in seconds (0 - 4,918s). |
-| `campaign` | Integer | Campaign | 0 (0.0%) | Number of contacts performed during this campaign (1 - 63). |
+| `duration` | Integer | **POST-CALL** | 0 (0.0%) | Last contact duration in seconds (0 - 4,918s). Excluded from pre-call pipelines. |
+| `campaign` | Integer | Campaign | 0 (0.0%) | Number of contacts performed during this campaign (1 - 63). Raw count preserved. |
 | `pdays` | Integer | History | 0 (0.0%) | Days since last contact from prior campaign (-1 = never). |
 | `previous` | Integer | History | 0 (0.0%) | Contacts performed before this campaign (0 - 275). |
 | `poutcome` | Object | History | 36,959 (81.7%) | Outcome of previous marketing campaign. |
@@ -61,7 +61,7 @@ The dataset comprises **45,211 contact records** with **16 raw feature attribute
 
 ---
 
-## 3. The Target Leakage Investigation (`duration`)
+## 3. Leakage Protection & The `duration` Investigation
 
 ### Empirical Evidence of Leakage
 The UCI dataset documentation explicitly notes that `duration` is only known after a call has been concluded. Our forensic audit quantified the strength of this post-call leakage:
@@ -94,7 +94,7 @@ Call duration is a **consequence** of the conversation unfolding, not a pre-call
 - Most critically: **at the moment a lead is selected from the CRM, duration is completely unknown**.
 
 > [!CAUTION]
-> **Enforcement in Code**: `duration` must be strictly removed from all feature selection, preprocessing pipelines, and clustering inputs. This is enforced programmatically via `PreCallFeatureEngineer` and `drop_duration()` in `src/features/build_features.py`.
+> **Scope of Leakage Protection**: The supervised pre-call pipeline is **leakage-protected** by programmatically quarantining and stripping `duration` in `PreCallFeatureEngineer` and `drop_duration()`. Any future unsupervised customer segmentation pipeline must adhere to this exact same pre-call feature contract before clustering.
 
 ---
 
@@ -142,16 +142,16 @@ The `campaign` attribute records the number of contacts performed during the cur
 | **`failure`** | 4,901 | 10.84% | 618 | **12.61%** |
 | **`unknown` / `NaN`** | 36,959 | 81.75% | 3,386 | **9.16%** |
 
-#### Investigation of the Near-Perfect Alignment Exceptions:
-While `pdays == -1` (36,954 records) and `poutcome.isna()` (36,959 records) appear identical at first glance, there is a small discrepancy of **exactly 5 records**:
-* For all 36,954 records where `pdays == -1`, `poutcome` is missing/NaN (100% agreement).
-* However, **5 records** have `pdays > 0` and `previous >= 1`, yet `poutcome` is `NaN`:
+#### Replacing Absolute Claims: The 5 Alignment Exceptions
+While missing `poutcome` corresponds to uncontacted clients for **99.986% of records** (36,954 out of 36,959), it is **not** an absolute equivalence:
+* For all 36,954 records where `pdays == -1`, `poutcome` is missing/NaN.
+* However, **exactly 5 records** have `pdays > 0` and `previous >= 1`, yet `poutcome` is `NaN`:
   * Record 40658: `pdays = 98`, `previous = 1`
   * Record 41821: `pdays = 168`, `previous = 5`
   * Record 42042: `pdays = 188`, `previous = 2`
   * Record 43978: `pdays = 416`, `previous = 2`
   * Record 45021: `pdays = 528`, `previous = 7`
-* **Interpretation**: These 5 observations represent repeat contacts where the prior campaign result was unrecorded or missing in the source CRM. Preserving `unknown` as an explicit categorical state ensures these records are handled robustly without corrupting feature consistency.
+* **Interpretation**: These 5 observations represent repeat contacts where the prior campaign result was unrecorded or missing in the source CRM. We preserve `unknown` as an explicit categorical state rather than claiming missing `poutcome` always means uncontacted.
 
 ---
 
@@ -180,30 +180,38 @@ Analyzing contact records and observed conversion rates across calendar months:
 
 ---
 
-## 7. Data Quality, Missingness & Unit of Analysis
+## 7. Data Quality, Missingness & Validation Design
 
 ### Missingness Handling: Preserving Informative States
 * Missing counts: `poutcome` (36,959), `contact` (13,020), `education` (1,857), `job` (288).
-* In this dataset, missingness carries domain meaning (`poutcome` missingness reflects uncontacted clients; `contact` missingness reflects unrecorded channels).
-* **Pipeline Rule**: Categorical imputation must use a constant `'unknown'` strategy. Imputing `poutcome` via `most_frequent` would falsely label over 36,000 uncontacted records as `'failure'`, corrupting the training signal.
+* In this dataset, missingness carries domain meaning (`poutcome` missingness reflects mostly uncontacted clients; `contact` missingness reflects unrecorded channels).
+* **Pipeline Rule**: Categorical imputation uses `CategoricalMissingImputer(fill_value='unknown')`. Imputing `poutcome` via `most_frequent` would falsely label over 36,000 records as `'failure'`, corrupting the training signal.
 
 ### Unit of Analysis & Repeated Demographic/Financial Profiles
 Evaluating subsets defined by `(age, job, marital, education, default, balance, housing, loan)` reveals **4,163 repeated profiles (9.21%)**.
 * **Distinction**: In the absence of unique client identifiers (such as a customer ID, SSN, or account number), we cannot prove that two records with identical demographics and balances are the same individual called across multiple campaigns. They may simply be distinct clients with identical demographic and financial features.
-* **Validation Decision & Limitations**:
-  * We retain a **stratified random split** as the baseline validation method.
-  * We explicitly document the limitation: without client IDs and calendar years, complete independence of observations cannot be mathematically guaranteed. However, we avoid overstating claims of proven group leakage based solely on demographic overlaps.
+
+### Validation Design: Model Selection via Validation Split
+To prevent data snooping on the final test set:
+1. **Partitioning**: Full dataset is split into **Full Training (80%)** and **Untouched Holdout Test (20%)**.
+2. **Validation Split**: The 80% training partition is sub-divided into **Train (60% of total)** and **Validation (20% of total)**.
+3. **Fixed-Capacity Derivation**:
+   $$\text{capacity\_fraction} = \frac{5{,}000}{45{,}211} \approx 0.11059$$
+   $$k_{\text{val}} = \text{round}(9{,}042 \times 0.11059) = 1{,}000 \quad | \quad k_{\text{test}} = \text{round}(9{,}043 \times 0.11059) = 1{,}000$$
+4. **Model Selection Metric**: Candidate models are compared strictly on the validation set using **Conversions@capacity** (and Precision@capacity) as the primary decision metric. PR-AUC and ROC-AUC serve as secondary ranking diagnostics.
+5. **Single Test Evaluation**: The winning candidate is refitted on the full 80% training data and evaluated on the untouched test set **exactly once**.
 
 ---
 
-## 8. Phase 2 Feature Engineering Blueprint
+## 8. Phase 2 Pre-Call Feature Engineering Blueprint
 
 The pre-call feature pipeline is formally codified in `src/features/build_features.py`:
 
 ```mermaid
 flowchart TD
-    Raw[Raw UCI Bank Marketing Data] --> Drop[Drop duration - Leakage Quarantine]
-    Drop --> Eng[PreCallFeatureEngineer]
+    Raw[Raw UCI Bank Marketing Data] --> Drop[Drop duration - Leakage Protection]
+    Drop --> Norm[Normalize day_of_week -> contact_day_of_month]
+    Norm --> Eng[PreCallFeatureEngineer]
     
     Eng --> F1[was_previously_contacted: pdays != -1]
     Eng --> F2[pdays_recency: log1p of max pdays, 0]
@@ -218,17 +226,18 @@ flowchart TD
     Preproc --> CatPipe[Categorical: Constant 'unknown' Impute + OneHotEncoder]
 ```
 
-1. **Leakage Elimination**: Programmatic removal of `duration`.
-2. **Prior Contact Transformations**: `was_previously_contacted` binary flag and `pdays_recency` ($\log1p(\max(pdays, 0))$) avoiding the $-1$ sentinel distortion.
-3. **Financial Burden & Balance**: `has_debt_burden`, `negative_balance_flag`, and signed $\log1p$ balance representation.
-4. **Outreach Frequency**: Raw `campaign` contacts preserved.
-5. **Categorical Imputation**: Constant `'unknown'` strategy inside sklearn pipeline.
+1. **Leakage Protection**: Programmatic removal of `duration`.
+2. **Field Normalization**: `day_of_week` (1–31) mapped to `contact_day_of_month`.
+3. **Prior Contact Transformations**: `was_previously_contacted` binary flag and `pdays_recency` ($\log1p(\max(pdays, 0))$) avoiding the $-1$ sentinel distortion.
+4. **Financial Burden & Balance**: `has_debt_burden`, `negative_balance_flag`, and signed $\log1p$ balance representation.
+5. **Outreach Frequency**: Raw `campaign` contacts preserved.
+6. **Categorical Imputation**: Constant `'unknown'` strategy inside sklearn pipeline.
 
 ---
 
-## 9. Next Phase Readiness & Benchmarks
+## 9. Baseline Definitions & Validation Results
 
-Phase 1 data audit reconciliation and Phase 2 pre-call pipeline implementation are complete:
-- Random Outreach Benchmark: **585 conversions @ 5,000 calls (11.70% precision, 1.00x lift)**
-- Business-Rule Heuristic Benchmark: **1,664 conversions @ 5,000 calls (33.28% precision, 2.84x lift)**
-- All code has been verified and tested against the updated ranking evaluation framework.
+Under the capacity-fraction outreach ($k = 1,000$ on the 20% test partition):
+- **Random Selection Benchmark**: **117.0 conversions** (11.70% precision, 1.00x lift).
+- **Business-Rule Heuristic Benchmark**: **349 conversions** (34.90% precision, 2.98x lift).
+- **Selected ML Model (Random Forest)**: **470 conversions** (47.00% precision, 4.02x lift).

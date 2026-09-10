@@ -1,9 +1,9 @@
 """Non-ML baselines for pre-call outreach prioritization.
 
 Provides:
-1. Random Selection Baseline: Theoretical benchmark under random dialing.
-2. Business-Rule Heuristic Baseline: Non-ML prioritization using pre-call domain rules
-   (prior successful contacts, absence of debt burden, and balance tie-breaking).
+1. Random Selection Baseline: Theoretical benchmark under uniform random dialing.
+2. Business-Rule Heuristic Baseline: Non-ML prioritization using frozen pre-call domain rules
+   (prior successful contacts, absence of debt burden, and deterministic balance tie-breaking).
 """
 from typing import Dict, Any
 import numpy as np
@@ -32,7 +32,7 @@ def evaluate_random_baseline(
     """
     n_total = len(y_true)
     n_pos = int((y_true == pos_label).sum())
-    base_rate = n_pos / n_total
+    base_rate = n_pos / n_total if n_total > 0 else 0.0
     k_eval = min(k, n_total)
 
     expected_conversions = k_eval * base_rate
@@ -55,12 +55,13 @@ def evaluate_random_baseline(
 def business_rule_baseline_score(X: pd.DataFrame) -> pd.Series:
     """Compute a deterministic heuristic score using legitimate pre-call signals.
 
-    Heuristic Logic:
-    - Tier 1 (+1000 pts): Prior campaign success (poutcome == 'success').
-      Historically converts at ~64.7% (highest-propensity cohort).
-    - Tier 2 (+500 pts): Previously contacted prospects (pdays != -1) without personal loans.
-    - Tier 3 (+200 pts): Debt-free clients with neither housing nor personal loans.
-    - Tie-breaking: Client average yearly balance (higher liquidity preferred).
+    Frozen Rule Specifications (Independent of test set labels):
+    - Priority Tier 1 (+1000 pts): Prior campaign success (poutcome == 'success').
+      Historically converts at ~64.7% (highest-propensity pre-call cohort).
+    - Priority Tier 2 (+500 pts): Previously contacted prospects (pdays != -1) without personal loans.
+    - Priority Tier 3 (+200 pts): Debt-free clients with neither housing nor personal loans.
+    - Continuous Score Contribution: Client balance normalized to [-10, 50] to separate tiers
+      while rewarding financial capacity.
 
     Args:
         X: Feature dataframe.
@@ -84,10 +85,9 @@ def business_rule_baseline_score(X: pd.DataFrame) -> pd.Series:
         debt_free = (X["housing"] == "no") & (X["loan"] == "no")
         scores += np.where(debt_free, 200.0, 0.0)
 
-    # 4. Deterministic tie-breaker: normalized balance
+    # 4. Continuous score contribution: balance (clipped to [-10, 50] to preserve discrete tiers)
     if "balance" in X.columns:
         bal = X["balance"].fillna(0)
-        # Scaled balance contribution (clipped to [-10, 50] to break ties without overwhelming tiers)
         scores += np.clip(bal / 1000.0, -10.0, 50.0)
 
     return scores
@@ -99,7 +99,12 @@ def evaluate_business_rule_baseline(
     k: int = 5000,
     pos_label: str = "yes"
 ) -> Dict[str, Any]:
-    """Evaluate the heuristic business-rule baseline at outreach capacity k.
+    """Evaluate the heuristic business-rule baseline with deterministic tie-breaking.
+
+    Deterministic Tie-Breaking Order:
+    1. Primary: Composite heuristic score descending
+    2. Secondary: Raw balance descending (higher financial liquidity preferred)
+    3. Tertiary: Stable original row index ascending
 
     Args:
         X: Feature dataframe.
@@ -118,8 +123,19 @@ def evaluate_business_rule_baseline(
 
     y_binary = (y_true == pos_label).astype(int)
 
-    # Rank descending
-    ranked_indices = scores.sort_values(ascending=False).index[:k_eval]
+    # Deterministic multi-key tie-breaking
+    bal_series = X["balance"].fillna(0) if "balance" in X.columns else pd.Series(0, index=X.index)
+    sort_df = pd.DataFrame({
+        "score": scores,
+        "balance": bal_series,
+        "row_idx": np.arange(len(X))
+    }, index=X.index)
+
+    ranked_indices = sort_df.sort_values(
+        by=["score", "balance", "row_idx"],
+        ascending=[False, False, True]
+    ).index[:k_eval]
+
     top_k_targets = y_true.loc[ranked_indices]
     conversions = int((top_k_targets == pos_label).sum())
 

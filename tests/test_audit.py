@@ -27,8 +27,8 @@ def sample_df():
         "month": ["may", "jun", "jul", "may"],
         "duration": [60, 300, 0, 60],
         "campaign": [1, 2, 8, 1],
-        "pdays": [-1, 100, -1, -1],
-        "previous": [0, 2, 0, 0],
+        "pdays": [-1, 100, -1, 50],
+        "previous": [0, 2, 0, 1],
         "poutcome": [None, "success", None, None],
         "target": ["no", "yes", "no", "no"],
     })
@@ -52,13 +52,18 @@ def test_audit_campaign_fatigue(sample_df):
     assert isinstance(fatigue, pd.DataFrame)
     assert "campaign_tier" in fatigue.columns
     assert "conversion_rate" in fatigue.columns
+    assert "record_count" in fatigue.columns
 
 def test_audit_prior_contacts(sample_df):
     prior = audit_prior_contacts(sample_df)
-    assert prior["never_contacted_count"] == 3
-    assert prior["never_contacted_pct"] == 0.75
+    assert prior["never_contacted_count"] == 2
+    assert prior["never_contacted_pct"] == 0.50
+    # Record at index 3 has pdays=50 != -1 but poutcome is None (exception)
+    assert prior["exception_count"] == 1
+    assert prior["exception_indices"] == [3]
 
 def test_audit_data_quality_and_duplicates(sample_df):
     quality = audit_data_quality_and_duplicates(sample_df)
     assert "education" in quality["nan_counts"]
+    assert quality["repeated_demographic_profiles"] == 1
     assert quality["duplicate_demographic_profiles"] == 1

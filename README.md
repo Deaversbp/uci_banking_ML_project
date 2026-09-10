@@ -1,17 +1,33 @@
 # UCI Banking Machine Learning Project
 
-An end-to-end Machine Learning project designed to learn and practice foundational to advanced ML concepts using the **UCI Bank Marketing dataset** (fetched via `ucimlrepo`).
+An end-to-end Machine Learning project designed to solve an outbound telemarketing optimization problem using the **UCI Bank Marketing dataset** (fetched via `ucimlrepo`).
+
+The project frames a realistic pre-call decision problem: **the sales team has operational capacity to call only 5,000 customers from the eligible pool**. The objective combines:
+1. **Supervised Lead Prioritization**: Predict and rank-order leads by conversion probability to maximize subscriptions within the 5,000-call quota.
+2. **Unsupervised Prospect Segmentation**: Identify natural customer segments to tailor outreach messaging and understand audience composition.
 
 ---
 
-## 🎯 Project Goals
+## 🎯 Project Goals & Foundational Standards
 
-- **Learn ML Pipeline Design**: Clean modular code structure separating data ingestion, feature engineering, model training, and evaluation.
-- **Handling Real-World Data Challenges**:
-  - Class imbalance (~11.7% subscription rate).
-  - Mixed data types (numerical and categorical features).
-  - Evaluation beyond simple accuracy (Precision, Recall, F1-score, ROC-AUC).
-- **Experimentation & Reproducibility**: Using configuration files (`config/config.yaml`), local caching of raw data, and automated testing.
+- **Strict Pre-Call Leakage Prevention**:
+  - The dataset contains `duration` (call length in seconds), which alone yields an artificial ROC-AUC of 0.808.
+  - Because duration is unknown before dialing, it is programmatically quarantined and excluded from all feature engineering, pre-call models, and prospect clustering.
+- **Two-Tier Baseline Benchmarking (5,000-Call Constraint)**:
+  - **Random Selection Benchmark**: With an 11.70% base prevalence, random dialing yields **~585 conversions**.
+  - **Business-Rule Heuristic Benchmark**: A non-ML domain heuristic prioritizing prior campaign success (`poutcome == 'success'`), prior contacts without debt, and liquid balances achieves **~1,664 conversions (33.28% precision, 2.84x lift)**.
+  - All supervised ML models must outperform **both** benchmarks to prove commercial value.
+- **Capacity-Constrained Evaluation**:
+  - Models are ranked and selected using **PR-AUC (Average Precision)**, **ROC-AUC**, **Precision@k**, and **Lift@k** rather than arbitrary thresholded F1 scores.
+- **Phase 2 Pre-Call Feature Engineering**:
+  - `was_previously_contacted`: Binary indicator for previous campaign contact (`pdays != -1`).
+  - `pdays_recency`: Non-negative transformed recency handling `-1` explicitly via $\log1p(\max(pdays, 0))$.
+  - `prior_success`: Binary indicator for prior campaign success (`poutcome == 'success'`).
+  - `has_debt_burden`: Combined indicator for housing and personal loan obligations.
+  - `negative_balance_flag` and signed $\log1p$ balance representation.
+  - Preserved raw `campaign` contact counts.
+- **Informative Missing-State Preservation**:
+  - Missingness in `poutcome` (81.7%) and `contact` (28.8%) is preserved as an explicit category (`unknown`), preventing naive imputation to `'failure'`.
 
 ---
 
@@ -21,40 +37,48 @@ An end-to-end Machine Learning project designed to learn and practice foundation
 uci_banking_ML_project/
 ├── .gitignore                    # Ignores .venv, datasets, models, checkpoints
 ├── README.md                     # Project documentation and guide
-├── requirements.txt              # Pinned Python dependencies
+├── requirements.txt              # Python dependencies with minimum version constraints
 ├── config/
 │   └── config.yaml               # Dataset IDs, split ratios, model seeds
 ├── data/
 │   ├── raw/                      # Cached raw data (CSV)
 │   └── processed/                # Preprocessed datasets
-├── models/                       # Saved trained models (.joblib)
+├── models/                       # Saved trained model pipelines (.joblib)
 ├── notebooks/
-│   └── 01_data_exploration.ipynb # Initial EDA and data visualization
+│   └── 01_data_exploration.ipynb # Pre-computed EDA & audit diagnostics notebook
+├── reports/
+│   ├── data_audit_report.md      # Comprehensive Phase 1 Forensic Data Audit Report
+│   └── figures/                  # Generated diagnostic figures (PNG)
+├── scripts/
+│   └── build_notebook.py         # Authoritative generator for 01_data_exploration.ipynb
 ├── src/
 │   ├── __init__.py
 │   ├── data/
-│   │   ├── __init__.py
+│   │   ├── __init__.py           # Explicit package exports
+│   │   ├── audit_dataset.py      # Automated forensic audit & figure generation
 │   │   └── load_data.py          # Fetches & caches UCI dataset (ID 222)
 │   ├── features/
-│   │   ├── __init__.py
-│   │   └── build_features.py     # Preprocessing pipeline (One-Hot, Scaler)
+│   │   ├── __init__.py           # Explicit package exports
+│   │   └── build_features.py     # PreCallFeatureEngineer & leak-free preprocessing
 │   ├── models/
-│   │   ├── __init__.py
-│   │   ├── evaluate.py           # Evaluation metrics & confusion matrix
-│   │   └── train.py              # Baseline model training & serialization
+│   │   ├── __init__.py           # Explicit package exports
+│   │   ├── baseline.py           # Random & Business-Rule Heuristic benchmarks
+│   │   ├── evaluate.py           # Ranking metrics (PR-AUC, Lift@k, Precision@k)
+│   │   └── train.py              # End-to-end model training & benchmark comparison
 │   └── utils/
 │       ├── __init__.py
 │       └── logger.py             # Logging and YAML config loader
 └── tests/
     ├── __init__.py
-    └── test_data.py              # Sanity check tests for pipeline
+    ├── test_audit.py             # Unit tests for audit calculations & exception checks
+    └── test_data.py              # Pipeline, leakage safety, features, and ranking tests
 ```
 
 ---
 
 ## ⚙️ Environment Setup
 
-This project uses **Python 3.11.9** for optimal scikit-learn wheel compatibility on Windows.
+This project uses **Python 3.11.9** on Windows.
 
 ### 1. Activate the Virtual Environment
 
@@ -63,7 +87,7 @@ In Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
 ```
 
-If you encounter execution policy restrictions in PowerShell:
+If you encounter execution policy restrictions:
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 .\.venv\Scripts\Activate.ps1
@@ -85,45 +109,30 @@ Download the Bank Marketing dataset directly from the UCI ML Repository (ID 222)
 ```powershell
 python -m src.data.load_data
 ```
-The raw data is cached to `data/raw/bank_features.csv` and `data/raw/bank_targets.csv` so you can work offline.
 
-### Step 2: Run Unit Tests
-Ensure everything is configured and operational:
+### Step 2: Run the Forensic Data Audit
+Execute the automated audit suite to recompute statistical diagnostics and update visual figures:
 ```powershell
-pytest
+python -m src.data.audit_dataset
+```
+Audit figures are saved to `reports/figures/`, and findings are documented in [`reports/data_audit_report.md`](reports/data_audit_report.md).
+
+### Step 3: Run the Test Suite
+Execute unit and regression tests covering leakage exclusion, feature engineering, missingness preservation, and ranking metrics:
+```powershell
+pytest -v
 ```
 
-### Step 3: Train Baseline Models
-Run the end-to-end training pipeline (trains Logistic Regression and Random Forest with balanced class weights):
+### Step 4: Train Pre-Call Models & Compare Against Baselines
+Run the training pipeline to evaluate Logistic Regression and Random Forest against both the Random Baseline and Business-Rule Baseline:
 ```powershell
 python -m src.models.train
 ```
-The best-performing model pipeline is automatically saved to `models/best_*_pipeline.joblib`.
+The best pipeline selected by **PR-AUC** is serialized to `models/best_*_pipeline.joblib`.
 
-### Step 4: Explore the Notebook
-Start Jupyter and open `notebooks/01_data_exploration.ipynb`:
+### Step 5: Explore the Diagnostic Notebook
+Open `notebooks/01_data_exploration.ipynb`:
 ```powershell
 jupyter notebook
 ```
-
----
-
-## 🔗 GitHub Integration & Remote Setup
-
-Git is initialized and configured with your Git Credential Manager for user **`Deaversbp`**.
-
-### To push this project to a new GitHub repository:
-
-1. Create a new empty repository on [GitHub](https://github.com/new) named `uci_banking_ML_project`.
-2. Link your local repository to the remote:
-   ```powershell
-   git remote add origin https://github.com/Deaversbp/uci_banking_ML_project.git
-   git branch -M main
-   ```
-3. Commit and push your code:
-   ```powershell
-   git add .
-   git commit -m "Initial commit: UCI Banking ML project setup and pipeline"
-   git push -u origin main
-   ```
-*Git Credential Manager will automatically use your existing authenticated GitHub session.*
+*(Note: To modify notebook content, edit the authoritative generator `scripts/build_notebook.py` and run `python scripts/build_notebook.py && jupyter nbconvert --to notebook --execute --inplace notebooks/01_data_exploration.ipynb`)*.

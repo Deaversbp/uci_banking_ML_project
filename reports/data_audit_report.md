@@ -2,41 +2,42 @@
 
 **Project**: UCI Bank Marketing Term Deposit Outreach Optimization  
 **Author**: Machine Learning & Analytics Team  
-**Date**: September 2026  
-**Status**: Completed  
+**Date**: September 2026 (Updated Post-Reconciliation)  
+**Status**: Completed & Verified  
 **Deliverable Type**: Forensic Data Audit Report (Phase 1)
 
 ---
 
 ## 1. Executive Summary & Business Baseline
 
-### The Business Context
-The bank conducts outbound telemarketing campaigns to sell term deposits. Due to operational capacity constraints, the sales team can call only **5,000 customers** from the eligible population. The business objective is two-fold:
-1. **Supervised Optimization**: Predict and rank-order leads by subscription probability to maximize conversions within the 5,000-call quota.
-2. **Unsupervised Discovery**: Uncover natural customer segments to understand who the bank is reaching and tailor messaging per segment.
+### The Business Problem & Decision Context
+The bank conducts outbound telemarketing campaigns to sell term deposits. Due to operational capacity constraints, the sales team can call only **5,000 customers** from the eligible prospect population. The business goals are:
+1. **Supervised Lead Prioritization**: Rank-order prospects by conversion probability to maximize subscriptions within the 5,000-call quota.
+2. **Unsupervised Prospect Segmentation**: Uncover natural customer segments to understand who the campaign reaches and tailor messaging per segment.
 
-### Baseline Economics (The 5,000 Call Constraint)
-From the total dataset of **45,211 contacts**, **5,289 clients subscribed**, yielding a baseline prevalence rate of **11.6985% (~11.70%)**.
+### Baseline Economics & The Two-Tier Benchmark
+From the total dataset of **45,211 contact records**, **5,289 clients subscribed**, yielding a baseline prevalence rate of **11.6985% (~11.70%)**.
 
 ```
 Expected Random Outreach Conversions = 5,000 × 0.116985 ≈ 585 accounts
 ```
 
-| Metric | Random Outreach (Baseline) | Target Goal (Model-Prioritized) |
-| :--- | :--- | :--- |
-| **Calls Dialed** | 5,000 | 5,000 (Fixed Capacity) |
-| **Expected Conversions** | **585 accounts** | **>1,500 accounts (2.5x+ Lift)** |
-| **Precision@5,000** | 11.70% | >30.00% |
-| **Sales Waste** | 4,415 unproductive calls | Minimized unproductive dials |
+Crucially, **beating random selection is necessary but insufficient**. A competent sales operation uses intuitive pre-call business heuristics (e.g. prioritizing prior campaign winners and debt-free liquid clients). Therefore, later ML models must beat **both** benchmarks:
+
+| Outreach Strategy | Method / Logic | Expected Conversions @ 5,000 Calls | Precision @ 5,000 | Lift @ 5,000 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Random Baseline** | Uniform random selection from eligible pool | **~585 accounts** | **11.70%** | **1.00x** |
+| **Business-Rule Baseline** | Heuristic: Prior success (`poutcome == 'success'`), then prior contact (`pdays != -1`) without loans, tie-broken by `balance` | **~1,664 accounts** | **33.28%** | **2.84x** |
+| **Target ML Models (Phase 3)** | Supervised rank-ordering optimizing PR-AUC & Precision@k | **Target: >2,000 accounts** | **Target: >40.00%** | **Target: >3.50x** |
 
 > [!IMPORTANT]
-> **585 conversions** is the benchmark against which all predictive models in Phase 3 will be measured. Any model strategy that fails to comfortably outperform 585 conversions within the top 5,000 ranked leads provides zero commercial value.
+> A machine learning model that produces 1,200 conversions beats random outreach (585), but delivers negative business value compared to a simple, transparent business heuristic (1,664). All supervised models in Phase 3 will be evaluated against both hurdle rates.
 
 ---
 
 ## 2. Dataset Schema & Variable Inventory
 
-The dataset comprises **45,211 rows** and **16 raw feature columns** plus 1 binary target (`y`).
+The dataset comprises **45,211 contact records** with **16 raw feature attributes** and 1 binary target (`y`).
 
 | Column | Type | Category | Missing / Unknown | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -52,7 +53,7 @@ The dataset comprises **45,211 rows** and **16 raw feature columns** plus 1 bina
 | `day_of_week` | Integer | Campaign | 0 (0.0%) | Last contact day of the month (1 - 31). |
 | `month` | Object | Campaign | 0 (0.0%) | Last contact month of year (`jan` - `dec`). |
 | `duration` | Integer | **POST-CALL** | 0 (0.0%) | Last contact duration in seconds (0 - 4,918s). |
-| `campaign` | Integer | Campaign | 0 (0.0%) | Contacts performed during this campaign (1 - 63). |
+| `campaign` | Integer | Campaign | 0 (0.0%) | Number of contacts performed during this campaign (1 - 63). |
 | `pdays` | Integer | History | 0 (0.0%) | Days since last contact from prior campaign (-1 = never). |
 | `previous` | Integer | History | 0 (0.0%) | Contacts performed before this campaign (0 - 275). |
 | `poutcome` | Object | History | 36,959 (81.7%) | Outcome of previous marketing campaign. |
@@ -62,19 +63,16 @@ The dataset comprises **45,211 rows** and **16 raw feature columns** plus 1 bina
 
 ## 3. The Target Leakage Investigation (`duration`)
 
-### The Empirical Evidence
-The UCI documentation explicitly notes:
-> *"duration: last contact duration, in seconds (numeric). Important note: this attribute highly affects the output target (e.g., if duration=0 then y='no'). Yet, the duration is not known before a call is performed. Also, after the end of the call y is obviously known. Thus, this input should only be included for benchmark purposes and should be excluded if the intention is to have a realistic predictive model."*
-
-Our forensic audit quantified the exact magnitude of this leakage:
-* **Single-Feature Predictive Power**: A univariate classifier evaluating **only `duration` achieves an ROC-AUC of 0.8076**.
-* **Zero Duration Guarantee**: Exactly 3 calls had `duration = 0s`; **0.0% converted**.
-* **Target Distribution Divergence**:
+### Empirical Evidence of Leakage
+The UCI dataset documentation explicitly notes that `duration` is only known after a call has been concluded. Our forensic audit quantified the strength of this post-call leakage:
+* **Univariate Predictive Power**: A model using **only `duration` achieves an ROC-AUC of 0.8076**.
+* **Zero Duration Reality**: Exactly 3 calls had `duration = 0s`; **0.0% converted**.
+* **Target Distribution Shift**:
   * For $y = \text{'no'}$: Mean duration is **221.2s** (Median: **164s**, IQR: 95s - 279s).
   * For $y = \text{'yes'}$: Mean duration is **537.3s** (Median: **426s**, IQR: 244s - 725s) — **2.6x longer**.
 
 ### Decile Analysis of Duration vs. Conversion Rate
-Splitting all records into deciles of duration demonstrates a near-monotonic leakage curve:
+Partitioning records into deciles of duration reveals a steep post-hoc association:
 
 | Decile | Duration Range (s) | Conversion Rate |
 | :--- | :--- | :--- |
@@ -89,24 +87,24 @@ Splitting all records into deciles of duration demonstrates a near-monotonic lea
 | **D9** | 439 - 683s | 26.2% |
 | **D10 (Longest)** | 684 - 4,918s | **52.6%** |
 
-### Business & Behavioral Mechanism
-Call duration is **not a cause** of customer interest; it is a **consequence** of it:
-1. When an agent pitches an uninterested customer, the customer declines and terminates the call in under 60–90 seconds.
-2. When an agent pitches an interested customer, the customer asks questions, listens to disclosures, reviews interest rates, and proceeds to account opening, naturally extending call length beyond 7–10 minutes.
-3. **Pre-Call Impossibility**: Before dialing the lead, the sales rep has zero knowledge of how long the prospect will stay on the phone.
+### Mechanism: Strong Post-Call Leakage, Not Deterministic Identity
+Call duration is a **consequence** of the conversation unfolding, not a pre-call causal attribute. While a long conversation is strongly correlated with conversion (because explaining terms and closing takes time, whereas uninterested prospects decline quickly), it is **not a deterministic identity mapping**:
+- Over 47% of calls in Decile 10 (684s+ to over an hour) still ended in `'no'`.
+- Several dozen successful conversions occurred in under 120 seconds.
+- Most critically: **at the moment a lead is selected from the CRM, duration is completely unknown**.
 
 > [!CAUTION]
-> **Audit Directive**: `duration` must be **completely excluded** from all pre-call lead scoring pipelines and prospect segmentation models. Any model retaining `duration` will learn a trivial identity mapping ($duration > 400s \implies yes$) that collapses completely when applied to prospective uncalled leads.
+> **Enforcement in Code**: `duration` must be strictly removed from all feature selection, preprocessing pipelines, and clustering inputs. This is enforced programmatically via `PreCallFeatureEngineer` and `drop_duration()` in `src/features/build_features.py`.
 
 ---
 
-## 4. Campaign Dynamics & Outreach Fatigue (`campaign`)
+## 4. Campaign Outreach Dynamics (`campaign`)
 
-The `campaign` feature tracks how many times an agent has dialed this specific prospect during the current marketing wave.
+The `campaign` attribute records the number of contacts performed during the current campaign for this record.
 
-### Contact Volume vs. Marginal Return Analysis
+### Contact Record Distribution & Conversion Rate
 
-| Campaign Contacts | Total Calls Dialed | % of All Calls | Conversions | Conversion Rate |
+| Campaign Contacts | Contact Records | % of Observations | Conversions | Conversion Rate |
 | :--- | :--- | :--- | :--- | :--- |
 | **1 contact** | 17,544 | 38.8% | 2,561 | **14.60%** |
 | **2 contacts** | 12,505 | 27.7% | 1,401 | **11.20%** |
@@ -115,35 +113,27 @@ The `campaign` feature tracks how many times an agent has dialed this specific p
 | **6 - 10 contacts** | 3,159 | 7.0% | 206 | **6.52%** |
 | **> 10 contacts** | 1,196 | 2.6% | 47 | **3.93%** |
 
-### Critical Observations
-1. **The 3-Contact Threshold**:
-   - The first 3 contacts account for **78.7% of all calls** and **86.6% of all conversions** ($4,580 / 5,289$).
-   - Conversion rate on Call 1 is **14.60%**. By Call 4-5, it declines to **8.63%**. By Call 10+, it drops to **3.93%** (less than a third of the initial contact).
-2. **Sales Harassment & Operational Waste**:
-   - The dataset contains clients contacted up to **63 times** in a single campaign!
-   - 1,196 dials were expended on leads called more than 10 times, yielding only 47 subscriptions.
-3. **Actionable Policy Recommendation**:
-   - Establish a sales outreach rule: **Max 3 to 4 attempts per lead**. Leads not converted after 4 attempts should be rested or routed to email/digital nurturing.
+### Observational Interpretation (Avoiding Causal Leaps)
+* **Observational Association**: The empirical conversion rate declines steadily across higher contact tiers (from 14.60% at 1 contact down to 3.93% at >10 contacts).
+* **Selection Effect Hypothesis**: This pattern does **not** prove that repeatedly calling a customer causes them to decline. Rather, it likely reflects a strong negative selection effect: prospects who are responsive or interested tend to convert on initial contacts (1–3), while recalcitrant, unreachable, or hesitant prospects accumulate repeated outreach attempts precisely because they have not subscribed.
+* **Pipeline Action**: We do **not** arbitrarily cap or truncate `campaign` in the feature pipeline. Retaining the true raw count preserves genuine outreach history while allowing tree-based or regularized models to learn non-linear relationships without artificial data distortion.
 
 ---
 
 ## 5. Prior Campaign History (`pdays`, `previous`, `poutcome`)
 
-### The Bimodal Structure of `pdays`
-The `pdays` field records the number of days since the client was last contacted from an earlier marketing campaign.
-* **`pdays = -1` (Never Contacted)**: Represents **36,954 records (81.74%)**.
-* **`pdays > 0` (Previously Contacted)**: Represents **8,257 records (18.26%)**, with values ranging from 1 to 871 days (median: 194 days).
+### The Structure of `pdays`
+* **`pdays = -1` (Never Contacted Previously)**: Represents **36,954 records (81.74%)**.
+* **`pdays > 0` (Previously Contacted)**: Represents **8,257 records (18.26%)**, with values from 1 to 871 days.
 
-### First-Time vs. Repeat Contact Performance
-A profound behavioral split emerges between prospects with past interactions and cold leads:
+### First-Time vs. Repeat Contact Records
 
-| Cohort | Record Count | % of Population | Conversions | Conversion Rate |
+| Contact History | Record Count | % of Population | Conversions | Conversion Rate |
 | :--- | :--- | :--- | :--- | :--- |
 | **Never Contacted (`pdays = -1`)** | 36,954 | 81.74% | 3,384 | **9.16%** |
 | **Previously Contacted (`pdays > 0`)** | 8,257 | 18.26% | 1,905 | **23.07% (2.5x higher)** |
 
-### The Power of `poutcome` (Prior Outcome)
-For the 8,257 previously contacted prospects, the result of that prior contact is an exceptionally strong predictor:
+### Prior Outcome (`poutcome`) Breakdown & The 5 Alignment Exceptions
 
 | Prior Outcome (`poutcome`) | Volume | % of Population | Conversions | Conversion Rate |
 | :--- | :--- | :--- | :--- | :--- |
@@ -152,16 +142,24 @@ For the 8,257 previously contacted prospects, the result of that prior contact i
 | **`failure`** | 4,901 | 10.84% | 618 | **12.61%** |
 | **`unknown` / `NaN`** | 36,959 | 81.75% | 3,386 | **9.16%** |
 
-> [!NOTE]
-> **Key Finding**: If a client previously subscribed (`poutcome = 'success'`), their likelihood of subscribing again is **64.73%**—over 5.5x the baseline! These 1,511 leads are the highest-value prospects in the bank's entire database and should be automatic top priorities for the 5,000-call quota.
+#### Investigation of the Near-Perfect Alignment Exceptions:
+While `pdays == -1` (36,954 records) and `poutcome.isna()` (36,959 records) appear identical at first glance, there is a small discrepancy of **exactly 5 records**:
+* For all 36,954 records where `pdays == -1`, `poutcome` is missing/NaN (100% agreement).
+* However, **5 records** have `pdays > 0` and `previous >= 1`, yet `poutcome` is `NaN`:
+  * Record 40658: `pdays = 98`, `previous = 1`
+  * Record 41821: `pdays = 168`, `previous = 5`
+  * Record 42042: `pdays = 188`, `previous = 2`
+  * Record 43978: `pdays = 416`, `previous = 2`
+  * Record 45021: `pdays = 528`, `previous = 7`
+* **Interpretation**: These 5 observations represent repeat contacts where the prior campaign result was unrecorded or missing in the source CRM. Preserving `unknown` as an explicit categorical state ensures these records are handled robustly without corrupting feature consistency.
 
 ---
 
-## 6. Seasonality & The "May Dialing Trap"
+## 6. Campaign Timing & Seasonality (`month`)
 
-Analyzing contact volume and conversion efficiency by month reveals stark operational inefficiencies:
+Analyzing contact records and observed conversion rates across calendar months:
 
-| Month | Calls Dialed | % of Total Calls | Conversions | Conversion Rate |
+| Month | Observations (Records) | % of Total Records | Conversions | Observed Conversion Rate |
 | :--- | :--- | :--- | :--- | :--- |
 | **May** | **13,766** | **30.4%** | 925 | **6.72% (Lowest)** |
 | **July** | 6,895 | 15.3% | 627 | 9.09% |
@@ -176,75 +174,61 @@ Analyzing contact volume and conversion efficiency by month reveals stark operat
 | **March** | 477 | 1.1% | 248 | **51.99% (Highest)** |
 | **December** | 214 | 0.5% | 100 | **46.73%** |
 
-### Operational Takeaway
-* **The May Trap**: Almost a third of the call center's annual outreach is concentrated in May (13,766 dials), yet May delivers the **lowest conversion rate of any month (6.72%)**. This represents mass indiscriminate dialing.
-* **Targeted Spring/Autumn Surges**: March, September, October, and December exhibit conversion rates **between 43% and 52%**, but collectively received only **2,008 calls (4.4% of total effort)**.
+### Observational Interpretation
+* **Correlation, Not Causation**: May records the lowest conversion rate (6.72%) alongside the highest observation volume (13,766 records), while March, September, October, and December show conversion rates above 43%.
+* **Confounding Factors**: We do **not** claim that shifting calls from May to October would causally increase conversions. The low conversion rate in May likely reflects broad, untargeted outreach waves, whereas the high rates in March/September/October/December may reflect highly pre-screened cohorts, special promotions, differing macroeconomic conditions (e.g. interest rate cycles), or tax/fiscal year-end timing.
 
 ---
 
-## 7. Data Quality, Missingness & Demographic Duplication
+## 7. Data Quality, Missingness & Unit of Analysis
 
-### Missing Values Profile
-1. **`poutcome`**: 36,959 missing (81.75%) — directly aligned with `pdays = -1` (uncontacted).
-2. **`contact`**: 13,020 missing (28.80%) — records where communication channel is unknown/unrecorded.
-3. **`education`**: 1,857 missing (4.11%).
-4. **`job`**: 288 missing (0.64%).
+### Missingness Handling: Preserving Informative States
+* Missing counts: `poutcome` (36,959), `contact` (13,020), `education` (1,857), `job` (288).
+* In this dataset, missingness carries domain meaning (`poutcome` missingness reflects uncontacted clients; `contact` missingness reflects unrecorded channels).
+* **Pipeline Rule**: Categorical imputation must use a constant `'unknown'` strategy. Imputing `poutcome` via `most_frequent` would falsely label over 36,000 uncontacted records as `'failure'`, corrupting the training signal.
 
-### Missingness Handling Strategy
-* Naive imputation (e.g., replacing `poutcome` missingness with the most frequent value `'failure'`) would be destructive.
-* **Treatment**: Missing values represent genuine informational states (`uncontacted` for `poutcome`, `unknown_channel` for `contact`). They must be retained and encoded as distinct categorical levels.
-
-### Demographic Duplicates & Unit of Analysis
-A client profile defined by `(age, job, marital, education, default, balance, housing, loan)` contains **4,163 duplicate records (9.21%)**.
-* The dataset is at the **contact/call level**, not the unique client level.
-* When evaluating or splitting data, stratified random splitting risks having the same underlying customer profile appear in both train and test partitions.
-* While acceptable for a baseline audit, in modeling we must verify that our cross-validation performance does not suffer from group leakage.
+### Unit of Analysis & Repeated Demographic/Financial Profiles
+Evaluating subsets defined by `(age, job, marital, education, default, balance, housing, loan)` reveals **4,163 repeated profiles (9.21%)**.
+* **Distinction**: In the absence of unique client identifiers (such as a customer ID, SSN, or account number), we cannot prove that two records with identical demographics and balances are the same individual called across multiple campaigns. They may simply be distinct clients with identical demographic and financial features.
+* **Validation Decision & Limitations**:
+  * We retain a **stratified random split** as the baseline validation method.
+  * We explicitly document the limitation: without client IDs and calendar years, complete independence of observations cannot be mathematically guaranteed. However, we avoid overstating claims of proven group leakage based solely on demographic overlaps.
 
 ---
 
-## 8. Feature Engineering Blueprint for Phase 2
+## 8. Phase 2 Feature Engineering Blueprint
 
-Based on the forensic audit, we establish the following specifications for Phase 2 preprocessing:
+The pre-call feature pipeline is formally codified in `src/features/build_features.py`:
 
 ```mermaid
-flowchart LR
-    A[Raw UCI Dataset] --> B[Drop duration - Leakage Quarantine]
-    B --> C[Contact History Features]
-    B --> D[Financial Risk Features]
-    B --> E[Categorical Encoders]
+flowchart TD
+    Raw[Raw UCI Bank Marketing Data] --> Drop[Drop duration - Leakage Quarantine]
+    Drop --> Eng[PreCallFeatureEngineer]
     
-    C --> C1[was_previously_contacted: pdays != -1]
-    C --> C2[pdays_active: log1p of pdays when > 0]
-    C --> C3[prior_success_flag: poutcome == 'success']
+    Eng --> F1[was_previously_contacted: pdays != -1]
+    Eng --> F2[pdays_recency: log1p of max pdays, 0]
+    Eng --> F3[prior_success: poutcome == 'success']
+    Eng --> F4[has_debt_burden: housing == 'yes' & loan == 'yes']
+    Eng --> F5[negative_balance_flag: balance < 0]
+    Eng --> F6[balance_log: sign balance * log1p abs balance]
+    Eng --> F7[campaign: raw count preserved without arbitrary cap]
     
-    D --> D1[has_both_loans: housing=='yes' & loan=='yes']
-    D --> D2[balance_is_negative: balance < 0]
-    D --> D3[balance_log: signed log1p transform]
-    
-    E --> E1[Explicit 'missing/unknown' level for poutcome/contact]
-    E --> E2[Target / One-Hot Encoding]
+    F1 & F2 & F3 & F4 & F5 & F6 & F7 --> Preproc[ColumnTransformer]
+    Preproc --> NumPipe[Numeric & Bool: Median Impute + StandardScaler]
+    Preproc --> CatPipe[Categorical: Constant 'unknown' Impute + OneHotEncoder]
 ```
 
-1. **Mandatory Exclusion**: Drop `duration` immediately upon data ingestion.
-2. **History Transformations**:
-   - `was_previously_contacted`: Boolean binary flag ($pdays \ne -1$).
-   - `pdays_clean`: Binned recency (<90 days, 90-180 days, >180 days, never).
-   - `prior_success`: Binary indicator for `poutcome == 'success'`.
-3. **Financial State Indicators**:
-   - `has_debt_burden`: Combined indicator for clients holding both housing and personal loans.
-   - `negative_balance_flag`: Binary indicator for $balance < 0$.
-   - `balance_tier`: Log-transformed or quantile-binned balance to handle extreme skewness (range: -€8,019 to +€102,127).
-4. **Campaign Fatigue Cap**:
-   - Cap `campaign` at 6 contacts to prevent model overfitting to extreme outliers (up to 63 dials).
+1. **Leakage Elimination**: Programmatic removal of `duration`.
+2. **Prior Contact Transformations**: `was_previously_contacted` binary flag and `pdays_recency` ($\log1p(\max(pdays, 0))$) avoiding the $-1$ sentinel distortion.
+3. **Financial Burden & Balance**: `has_debt_burden`, `negative_balance_flag`, and signed $\log1p$ balance representation.
+4. **Outreach Frequency**: Raw `campaign` contacts preserved.
+5. **Categorical Imputation**: Constant `'unknown'` strategy inside sklearn pipeline.
 
 ---
 
-## 9. Conclusion & Next Phase Readiness
+## 9. Next Phase Readiness & Benchmarks
 
-Phase 1 data audit and forensic EDA is complete. We have:
-1. Grounded the project in the **5,000-call constraint** and established the **585-conversion random baseline**.
-2. Formally proven and quantified the **`duration` target leakage** (ROC-AUC 0.808), establishing the mandate for its removal.
-3. Identified primary conversion drivers: prior campaign success (64.7%), first 3 campaign dials, and seasonal efficiency.
-4. Defined the Phase 2 feature engineering architecture.
-
-The project is cleared to advance to **Phase 2: Pre-Call Feature Engineering & Pipeline Hardening**.
+Phase 1 data audit reconciliation and Phase 2 pre-call pipeline implementation are complete:
+- Random Outreach Benchmark: **585 conversions @ 5,000 calls (11.70% precision, 1.00x lift)**
+- Business-Rule Heuristic Benchmark: **1,664 conversions @ 5,000 calls (33.28% precision, 2.84x lift)**
+- All code has been verified and tested against the updated ranking evaluation framework.

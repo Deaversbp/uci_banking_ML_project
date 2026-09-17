@@ -12,6 +12,16 @@ from .compare import (
     compute_aggregate_metrics,
     compare_supervised_candidates,
 )
+from .diagnostics import (
+    generate_oof_predictions,
+    compute_capacity_diagnostics,
+    analyze_subgroups,
+    analyze_false_positives_and_missed_positives,
+    compute_permutation_feature_importance,
+    compare_rf_vs_business_rule,
+    generate_diagnostic_figures,
+    run_full_diagnostics,
+)
 
 __all__ = [
     "train_baseline_models",
@@ -26,6 +36,14 @@ __all__ = [
     "compute_paired_delta_statistics",
     "compute_aggregate_metrics",
     "compare_supervised_candidates",
+    "generate_oof_predictions",
+    "compute_capacity_diagnostics",
+    "analyze_subgroups",
+    "analyze_false_positives_and_missed_positives",
+    "compute_permutation_feature_importance",
+    "compare_rf_vs_business_rule",
+    "generate_diagnostic_figures",
+    "run_full_diagnostics",
 ]
 
 def __getattr__(name):

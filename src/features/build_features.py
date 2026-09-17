@@ -148,6 +148,11 @@ class CategoricalMissingImputer(BaseEstimator, TransformerMixin):
             return X.fillna(self.fill_value).astype(str)
         return pd.DataFrame(X).fillna(self.fill_value).astype(str).to_numpy()
 
+    def get_feature_names_out(self, input_features=None):
+        if input_features is None:
+            return np.array([], dtype=object)
+        return np.asarray(input_features, dtype=object)
+
 
 def build_preprocessor(numeric_features: List[str], categorical_features: List[str]) -> ColumnTransformer:
     """Construct a ColumnTransformer that preserves informative categorical missingness.

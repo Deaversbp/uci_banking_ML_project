@@ -1,12 +1,14 @@
 """Probability Calibration and Reliability Diagnostics for Supervised Models.
 
 Methodological Guarantees:
-- Strict Leakage Protection: Drops 'duration' prior to all feature engineering and calibration.
+- Strict Pre-Campaign Contract: Enforces canonical 11 raw pre-campaign features.
+  Purges post-decision execution variables (duration, contact, month, day, campaign, y).
 - Nested Cross-Validation: Evaluates calibration strictly on out-of-fold outer-validation splits.
   Calibrator and base classifier are fitted solely on outer-training splits using internal CV
   (via CalibratedClassifierCV with ensemble=False). Outer-validation data is never used for fitting.
 - Partition Isolation: Operates strictly on the 80% development partition; holdout test partition is never accessed.
 - Business Alignment: Quantifies impact on capacity-constrained lead ranking (5,000 / 45,211 capacity fraction).
+  Evaluates fold-by-fold ranking guardrails at fold-specific capacity k_fold = 800.
 """
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, List
@@ -14,6 +16,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.special import logit
+from scipy.stats import spearmanr
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -22,7 +25,12 @@ from sklearn.model_selection import StratifiedKFold
 
 from src.features.build_features import (
     create_pre_call_pipeline,
-    drop_duration,
+)
+from src.features.feature_contract import (
+    select_canonical_pre_campaign_features,
+    validate_pre_campaign_feature_contract,
+    CANONICAL_PRE_CAMPAIGN_RAW_FEATURES,
+    CANONICAL_FORBIDDEN_FEATURES,
 )
 from src.models.evaluate import compute_ranking_metrics_at_k
 from src.models.train import compute_capacity_k
@@ -129,20 +137,21 @@ def generate_oof_calibrated_predictions(
     """Generate nested out-of-fold calibrated predictions across the development set.
 
     Evaluation Design:
+    - Enforces canonical pre-campaign feature contract; purges all forbidden execution variables.
     - 5-fold outer StratifiedKFold cross-validation partitions the development data.
     - For each outer fold:
       1. Pipeline (feature engineer + preprocessor + RF) is trained on outer training data.
       2. CalibratedClassifierCV(..., ensemble=False, cv=inner_cv) trains the calibrator
          using out-of-fold predictions strictly within the outer training data.
       3. The outer validation fold is scored using:
-         - Uncalibrated base pipeline
+         - Uncalibrated base pipeline (raw ranking score)
          - Sigmoid-calibrated classifier
          - Isotonic-calibrated classifier
       4. Outer validation labels are NEVER accessed during estimator or calibrator training.
     - Every development observation receives exactly one OOF prediction per method.
 
     Args:
-        X_dev: Raw development feature DataFrame (excluding or including 'duration').
+        X_dev: Raw development feature DataFrame.
         y_dev: Development target Series ('yes' / 'no').
         n_outer_splits: Number of outer validation splits.
         n_inner_splits: Number of inner validation splits for calibration fitting.
@@ -153,7 +162,9 @@ def generate_oof_calibrated_predictions(
         pd.DataFrame: Out-of-fold predictions with columns:
             ['orig_idx', 'actual_str', 'actual', 'raw_score', 'sigmoid_prob', 'isotonic_prob', 'fold']
     """
-    X_clean = drop_duration(X_dev)
+    X_clean = select_canonical_pre_campaign_features(X_dev)
+    validate_pre_campaign_feature_contract(X_clean, raise_on_violation=True)
+
     skf_outer = StratifiedKFold(n_splits=n_outer_splits, shuffle=True, random_state=random_state)
 
     n_dev = len(X_clean)
@@ -171,7 +182,7 @@ def generate_oof_calibrated_predictions(
     }
 
     logger.info(
-        f"Starting nested probability calibration across {n_outer_splits} outer folds "
+        f"Starting compliant nested probability calibration across {n_outer_splits} outer folds "
         f"and {n_inner_splits} inner folds on {n_dev:,} development records..."
     )
 
@@ -181,7 +192,10 @@ def generate_oof_calibrated_predictions(
         X_fold_val = X_clean.iloc[val_idx]
         y_fold_val = y_dev.iloc[val_idx]
 
-        # Construct leak-free pipeline
+        validate_pre_campaign_feature_contract(X_fold_train, raise_on_violation=True)
+        validate_pre_campaign_feature_contract(X_fold_val, raise_on_violation=True)
+
+        # Construct leak-free pipeline under canonical contract
         rf = RandomForestClassifier(**rf_params)
         base_pipeline = create_pre_call_pipeline(classifier=rf, raw_feature_df=X_fold_train)
 
@@ -239,7 +253,8 @@ def generate_oof_calibrated_predictions(
     # Verification assertions
     assert len(df_oof) == n_dev, f"Row count mismatch: {len(df_oof)} vs {n_dev}"
     assert not df_oof[["raw_score", "sigmoid_prob", "isotonic_prob"]].isna().any().any(), "NaN scores detected"
-    assert "duration" not in df_oof.columns, "Leakage detected: 'duration' found in output"
+    for forbidden in CANONICAL_FORBIDDEN_FEATURES:
+        assert forbidden not in df_oof.columns, f"Forbidden field '{forbidden}' found in output"
 
     return df_oof
 
@@ -248,17 +263,20 @@ def build_reliability_table(
     y_true: np.ndarray,
     y_prob: np.ndarray,
     n_bins: int = 10,
-    strategy: str = "uniform",
+    strategy: str = "quantile",
     min_count: int = 30,
 ) -> pd.DataFrame:
     """Build a detailed reliability / calibration table across score bins.
+
+    Supports both equal-width ('uniform') and equal-frequency ('quantile') binning.
+    Equal-frequency binning ensures robust sample counts in low-prevalence regimes (~11.7%).
 
     Args:
         y_true: Ground truth binary targets (0 or 1).
         y_prob: Predicted probabilities.
         n_bins: Number of probability bins (default: 10).
-        strategy: Binning strategy: 'uniform' (equal width) or 'quantile' (equal frequency).
-        min_count: Minimum sample threshold to flag unstable bin estimates.
+        strategy: Binning strategy: 'quantile' (equal frequency) or 'uniform' (equal width).
+        min_count: Minimum sample threshold to flag unstable bin estimates (default: 30).
 
     Returns:
         pd.DataFrame: Table containing bin intervals, counts, mean predicted prob,
@@ -270,18 +288,20 @@ def build_reliability_table(
 
     if strategy == "uniform":
         bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
-        # Digitize into 1..n_bins
         bin_indices = np.digitize(p_arr, bin_edges, right=True)
         bin_indices = np.clip(bin_indices, 1, n_bins)
+        ranges = [f"[{bin_edges[b - 1]:.2f}, {bin_edges[b]:.2f}]" for b in range(1, n_bins + 1)]
     elif strategy == "quantile":
-        quantiles = np.linspace(0, 1, n_bins + 1)
-        bin_edges = np.percentile(p_arr, quantiles * 100)
-        bin_edges = np.unique(bin_edges)
-        if len(bin_edges) <= 2:
-            bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
-        bin_indices = np.digitize(p_arr, bin_edges[1:], right=True) + 1
-        bin_indices = np.clip(bin_indices, 1, len(bin_edges) - 1)
-        n_bins = len(bin_edges) - 1
+        ranks = pd.Series(p_arr).rank(method="first")
+        bin_indices = (pd.qcut(ranks, q=n_bins, labels=False) + 1).values
+        ranges = []
+        for b in range(1, n_bins + 1):
+            mask = (bin_indices == b)
+            if mask.sum() > 0:
+                p_min, p_max = p_arr[mask].min(), p_arr[mask].max()
+                ranges.append(f"[{p_min:.4f}, {p_max:.4f}]")
+            else:
+                ranges.append("[N/A]")
     else:
         raise ValueError(f"Unsupported strategy '{strategy}'. Use 'uniform' or 'quantile'.")
 
@@ -289,13 +309,12 @@ def build_reliability_table(
     for b in range(1, n_bins + 1):
         mask = (bin_indices == b)
         count = int(mask.sum())
-        low = float(bin_edges[b - 1])
-        high = float(bin_edges[b])
+        bin_label = ranges[b - 1]
 
         if count == 0:
             rows.append({
                 "bin_idx": b,
-                "bin_range": f"[{low:.2f}, {high:.2f}]",
+                "bin_range": bin_label,
                 "count": 0,
                 "pct_of_total": 0.0,
                 "positives": 0,
@@ -313,7 +332,7 @@ def build_reliability_table(
 
         rows.append({
             "bin_idx": b,
-            "bin_range": f"[{low:.2f}, {high:.2f}]",
+            "bin_range": bin_label,
             "count": count,
             "pct_of_total": float(count / n_samples * 100),
             "positives": positives,
@@ -325,7 +344,156 @@ def build_reliability_table(
 
     df_table = pd.DataFrame(rows)
     assert df_table["count"].sum() == n_samples, f"Bin count sum {df_table['count'].sum()} != {n_samples}"
+    assert df_table["positives"].sum() == y_arr.sum(), f"Positives sum {df_table['positives'].sum()} != {y_arr.sum()}"
     return df_table
+
+
+def evaluate_fold_level_ranking(
+    df_oof_cal: pd.DataFrame,
+    full_capacity: int = 5000,
+    total_population: int = 45211,
+) -> Dict[str, Any]:
+    """Evaluate fold-by-fold ranking performance and ranking preservation.
+
+    Computes for each outer validation fold:
+    - k_fold derived from fixed capacity fraction (5,000 / 45,211)
+    - Ranking metrics at k_fold (Conversions@k, Precision@k, Recall@k, Lift@k, PR-AUC, ROC-AUC)
+    - Paired comparisons vs Raw RF (top-k overlap, changed leads, conversion delta, Spearman rho)
+    - Aggregated metrics across outer folds (mean, std, min, max, total deltas)
+
+    Args:
+        df_oof_cal: OOF prediction dataframe containing 'fold', 'actual', and model scores.
+        full_capacity: Full campaign call capacity (5,000).
+        total_population: Total population size (45,211).
+
+    Returns:
+        Dict[str, Any]: Fold-by-fold metrics and aggregated summary.
+    """
+    folds = sorted(df_oof_cal["fold"].unique())
+    fold_results: List[Dict[str, Any]] = []
+
+    methods = [
+        ("raw", "raw_score"),
+        ("sigmoid", "sigmoid_prob"),
+        ("isotonic", "isotonic_prob"),
+    ]
+
+    for f_idx in folds:
+        df_fold = df_oof_cal[df_oof_cal["fold"] == f_idx].copy()
+        n_val = len(df_fold)
+        k_fold = compute_capacity_k(n_val, total_population, full_capacity)
+        y_val = df_fold["actual"].values
+        positives = int(y_val.sum())
+
+        fold_entry: Dict[str, Any] = {
+            "fold": int(f_idx),
+            "n_val": n_val,
+            "k_fold": k_fold,
+            "positives": positives,
+        }
+
+        top_k_sets: Dict[str, set] = {}
+
+        for m_key, col in methods:
+            probs = df_fold[col].values
+            ranked_idx = np.lexsort((np.arange(len(probs)), -probs))
+            top_k = set(ranked_idx[:k_fold])
+            top_k_sets[m_key] = top_k
+
+            conv = int(y_val[list(top_k)].sum())
+            prec = float(conv / k_fold) if k_fold > 0 else 0.0
+            rec = float(conv / positives) if positives > 0 else 0.0
+            prev = float(positives / n_val) if n_val > 0 else 0.0
+            lift = float(prec / prev) if prev > 0 else 0.0
+
+            roc = float(roc_auc_score(y_val, probs))
+            pr = float(average_precision_score(y_val, probs))
+            brier = float(brier_score_loss(y_val, probs))
+            p_loss = np.clip(probs, 1e-15, 1.0 - 1e-15)
+            loss = float(log_loss(y_val, p_loss))
+
+            m_dict = {
+                "conversions": conv,
+                "precision": prec,
+                "recall": rec,
+                "lift": lift,
+                "roc_auc": roc,
+                "pr_auc": pr,
+                "brier": brier,
+                "log_loss": loss,
+            }
+
+            if m_key != "raw":
+                raw_top_k = top_k_sets["raw"]
+                raw_conv = fold_entry["raw"]["conversions"]
+                raw_pr = fold_entry["raw"]["pr_auc"]
+                raw_roc = fold_entry["raw"]["roc_auc"]
+
+                shared = len(raw_top_k.intersection(top_k))
+                changed = k_fold - shared
+                delta_conv = conv - raw_conv
+                rho = float(spearmanr(df_fold["raw_score"], df_fold[col]).statistic)
+
+                m_dict.update({
+                    "shared_leads": shared,
+                    "changed_leads": changed,
+                    "overlap_pct": float(shared / k_fold * 100),
+                    "delta_conversions": delta_conv,
+                    "spearman_rho": rho,
+                    "delta_pr_auc": pr - raw_pr,
+                    "delta_roc_auc": roc - raw_roc,
+                })
+
+            fold_entry[m_key] = m_dict
+
+        fold_results.append(fold_entry)
+
+    # Aggregations across folds
+    fold_agg: Dict[str, Any] = {}
+    for m_key, _ in methods:
+        m_conv = [f[m_key]["conversions"] for f in fold_results]
+        m_prec = [f[m_key]["precision"] for f in fold_results]
+        m_rec = [f[m_key]["recall"] for f in fold_results]
+        m_lift = [f[m_key]["lift"] for f in fold_results]
+        m_roc = [f[m_key]["roc_auc"] for f in fold_results]
+        m_pr = [f[m_key]["pr_auc"] for f in fold_results]
+        m_brier = [f[m_key]["brier"] for f in fold_results]
+        m_loss = [f[m_key]["log_loss"] for f in fold_results]
+
+        fold_agg[m_key] = {
+            "conversions": {"mean": float(np.mean(m_conv)), "std": float(np.std(m_conv, ddof=1)), "sum": int(np.sum(m_conv))},
+            "precision": {"mean": float(np.mean(m_prec)), "std": float(np.std(m_prec, ddof=1))},
+            "recall": {"mean": float(np.mean(m_rec)), "std": float(np.std(m_rec, ddof=1))},
+            "lift": {"mean": float(np.mean(m_lift)), "std": float(np.std(m_lift, ddof=1))},
+            "roc_auc": {"mean": float(np.mean(m_roc)), "std": float(np.std(m_roc, ddof=1))},
+            "pr_auc": {"mean": float(np.mean(m_pr)), "std": float(np.std(m_pr, ddof=1))},
+            "brier": {"mean": float(np.mean(m_brier)), "std": float(np.std(m_brier, ddof=1))},
+            "log_loss": {"mean": float(np.mean(m_loss)), "std": float(np.std(m_loss, ddof=1))},
+        }
+
+    paired_summary: Dict[str, Any] = {}
+    for m_key in ["sigmoid", "isotonic"]:
+        deltas_conv = [f[m_key]["delta_conversions"] for f in fold_results]
+        overlaps = [f[m_key]["overlap_pct"] for f in fold_results]
+        changed = [f[m_key]["changed_leads"] for f in fold_results]
+        rhos = [f[m_key]["spearman_rho"] for f in fold_results]
+        delta_pr = [f[m_key]["delta_pr_auc"] for f in fold_results]
+        delta_roc = [f[m_key]["delta_roc_auc"] for f in fold_results]
+
+        paired_summary[m_key] = {
+            "delta_conversions": {"mean": float(np.mean(deltas_conv)), "std": float(np.std(deltas_conv, ddof=1)), "total": int(np.sum(deltas_conv))},
+            "overlap_pct": {"mean": float(np.mean(overlaps)), "std": float(np.std(overlaps, ddof=1))},
+            "changed_leads": {"mean": float(np.mean(changed)), "std": float(np.std(changed, ddof=1)), "total": int(np.sum(changed))},
+            "spearman_rho": {"mean": float(np.mean(rhos)), "std": float(np.std(rhos, ddof=1))},
+            "delta_pr_auc": {"mean": float(np.mean(delta_pr)), "std": float(np.std(delta_pr, ddof=1))},
+            "delta_roc_auc": {"mean": float(np.mean(delta_roc)), "std": float(np.std(delta_roc, ddof=1))},
+        }
+
+    return {
+        "fold_results": fold_results,
+        "fold_agg": fold_agg,
+        "paired_summary": paired_summary,
+    }
 
 
 def compare_calibration_methods(
@@ -335,14 +503,14 @@ def compare_calibration_methods(
     """Perform exhaustive comparison between Uncalibrated, Sigmoid, and Isotonic models.
 
     Computes:
-    - Probability quality metrics (Brier, Log loss, Intercept, Slope)
-    - Discrimination metrics (ROC-AUC, PR-AUC)
-    - Capacity ranking metrics (Conversions@k, Precision@k, Recall@k, Lift@k)
-    - Prospect selection overlap, churn count, and conversion differences.
+    - Pooled probability quality metrics (Brier, Log loss, Intercept, Slope)
+    - Pooled discrimination metrics (ROC-AUC, PR-AUC)
+    - Pooled capacity ranking metrics at k (Conversions@k, Precision@k, Recall@k, Lift@k)
+    - Fold-by-fold ranking evaluation and preservation metrics across 5 outer folds.
 
     Args:
         df_oof_cal: DataFrame from generate_oof_calibrated_predictions.
-        k: Evaluated outreach capacity.
+        k: Evaluated pooled outreach capacity (default: 4,000).
 
     Returns:
         Dict[str, Any]: Comprehensive comparison dictionary.
@@ -363,8 +531,8 @@ def compare_calibration_methods(
         m = compute_calibration_metrics(y_arr, probs, k=k)
         method_metrics[label] = m
 
-        # Rank descending and record top-k
-        ranked = np.argsort(-probs)
+        # Deterministic descending rank sort
+        ranked = np.lexsort((np.arange(len(probs)), -probs))
         top_k_indices[label] = ranked[:k]
 
     # Baseline comparisons against Uncalibrated RF
@@ -377,7 +545,7 @@ def compare_calibration_methods(
         target_conversions = method_metrics[label]["conversions_at_k"]
 
         shared = len(raw_top_k.intersection(target_top_k))
-        changed_leads = len(raw_top_k.symmetric_difference(target_top_k)) // 2
+        changed_leads = k - shared
         overlap_pct = (shared / k) * 100.0
         delta_conversions = target_conversions - raw_conversions
 
@@ -388,10 +556,14 @@ def compare_calibration_methods(
             "delta_conversions": delta_conversions,
         }
 
+    # Fold-level ranking analysis if fold column is present
+    fold_eval = evaluate_fold_level_ranking(df_oof_cal) if "fold" in df_oof_cal.columns else None
+
     return {
         "k_evaluated": k,
         "method_metrics": method_metrics,
         "overlap_summary": overlap_summary,
+        "fold_level_evaluation": fold_eval,
     }
 
 
@@ -405,7 +577,7 @@ def generate_calibration_figures(
     Figures generated:
     1. 10_calibration_reliability_curves.png: Multi-method calibration curves against the diagonal.
     2. 11_calibrated_probability_distributions.png: Comparative probability distributions.
-    3. 12_calibration_binned_gaps.png: Binned calibration gap bar chart highlighting over/underconfidence.
+    3. 12_calibration_binned_gaps.png: Binned calibration gap bar chart across deciles.
 
     Args:
         df_oof_cal: OOF prediction dataframe.
@@ -425,9 +597,9 @@ def generate_calibration_figures(
     iso = df_oof_cal["isotonic_prob"].values
 
     colors = {
-        "Uncalibrated RF": "#4A90E2",    # Clean Blue
-        "Sigmoid Calibrated": "#E2841A",  # Warm Amber/Orange
-        "Isotonic Calibrated": "#2ECC71", # Vibrant Green
+        "Uncalibrated RF": "#1f77b4",    # Steel Blue
+        "Sigmoid Calibrated": "#ff7f0e",  # Amber Orange
+        "Isotonic Calibrated": "#2ca02c", # Emerald Green
     }
 
     # -------------------------------------------------------------
@@ -498,23 +670,23 @@ def generate_calibration_figures(
     # -------------------------------------------------------------
     # Figure 12: Binned Calibration Gaps
     # -------------------------------------------------------------
-    rel_raw = build_reliability_table(y_arr, raw, n_bins=10, strategy="uniform")
-    rel_sig = build_reliability_table(y_arr, sig, n_bins=10, strategy="uniform")
-    rel_iso = build_reliability_table(y_arr, iso, n_bins=10, strategy="uniform")
+    rel_raw = build_reliability_table(y_arr, raw, n_bins=10, strategy="quantile")
+    rel_sig = build_reliability_table(y_arr, sig, n_bins=10, strategy="quantile")
+    rel_iso = build_reliability_table(y_arr, iso, n_bins=10, strategy="quantile")
 
     x_indices = np.arange(10)
     bar_width = 0.26
 
-    fig, ax = plt.subplots(figsize=(10, 5.5))
+    fig, ax = plt.subplots(figsize=(11, 5.5))
     ax.bar(x_indices - bar_width, rel_raw["abs_calibration_gap"], width=bar_width, color=colors["Uncalibrated RF"], alpha=0.85, label="Uncalibrated RF")
     ax.bar(x_indices, rel_sig["abs_calibration_gap"], width=bar_width, color=colors["Sigmoid Calibrated"], alpha=0.85, label="Sigmoid Calibrated")
     ax.bar(x_indices + bar_width, rel_iso["abs_calibration_gap"], width=bar_width, color=colors["Isotonic Calibrated"], alpha=0.85, label="Isotonic Calibrated")
 
-    ax.set_title("Absolute Calibration Gap (|Mean Pred - Observed Rate|) by Probability Decile", fontsize=12, fontweight="bold", pad=12)
-    ax.set_xlabel("Probability Decile Bin", fontsize=10, fontweight="bold")
+    ax.set_title("Absolute Calibration Gap (|Mean Pred - Observed Rate|) by Quantile Decile", fontsize=12, fontweight="bold", pad=12)
+    ax.set_xlabel("Decile Bin (Equal Frequency: ~3,617 Prospects/Bin)", fontsize=10, fontweight="bold")
     ax.set_ylabel("Absolute Gap (Lower is Better)", fontsize=10, fontweight="bold")
     ax.set_xticks(x_indices)
-    ax.set_xticklabels(rel_raw["bin_range"], rotation=35, ha="right", fontsize=9)
+    ax.set_xticklabels([f"D{i+1}\n{r}" for i, r in enumerate(rel_raw["bin_range"])], rotation=0, ha="center", fontsize=8)
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend(loc="upper right", framealpha=0.95, fontsize=10)
 

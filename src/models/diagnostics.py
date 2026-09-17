@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 
 from src.data.load_data import load_bank_marketing_data
@@ -33,6 +33,12 @@ from src.features.build_features import (
     drop_duration,
     split_data,
     create_pre_call_pipeline,
+)
+from src.features.feature_contract import (
+    select_canonical_pre_campaign_features,
+    validate_pre_campaign_feature_contract,
+    CANONICAL_PRE_CAMPAIGN_RAW_FEATURES,
+    CANONICAL_FORBIDDEN_FEATURES,
 )
 from src.models.baseline import business_rule_baseline_score
 from src.models.train import compute_capacity_k
@@ -64,7 +70,8 @@ def generate_oof_predictions(
     Returns:
         pd.DataFrame: OOF predictions containing original index, actuals, predicted scores, and fold IDs.
     """
-    X_clean = drop_duration(X_dev)
+    X_clean = select_canonical_pre_campaign_features(X_dev)
+    validate_pre_campaign_feature_contract(X_clean.columns, raise_on_violation=True)
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
     n_dev = len(X_clean)
@@ -193,6 +200,9 @@ def compute_capacity_diagnostics(
     assert tp + fn == total_positives, f"Positive count mismatch: {tp + fn} != {total_positives}"
     assert tp + fp + fn + tn == n_samples, f"Population reconciliation mismatch: {tp + fp + fn + tn} != {n_samples}"
 
+    pr_auc = float(average_precision_score(df_annotated["actual"], df_annotated["score"]))
+    roc_auc = float(roc_auc_score(df_annotated["actual"], df_annotated["score"]))
+
     summary = {
         "k_evaluated": k_oof,
         "total_samples": n_samples,
@@ -206,6 +216,8 @@ def compute_capacity_diagnostics(
         "recall_at_k": recall_at_k,
         "lift_at_k": lift_at_k,
         "cutoff_score": cutoff_score,
+        "pr_auc": pr_auc,
+        "roc_auc": roc_auc,
     }
 
     return df_annotated, summary
@@ -214,18 +226,23 @@ def compute_capacity_diagnostics(
 def build_subgroup_definitions(X: pd.DataFrame) -> Dict[str, Dict[str, pd.Series]]:
     """Construct boolean mask series for all pre-call candidate subgroups.
 
+    Only legitimate pre-campaign CRM and customer dimensions are permitted.
+    Current-campaign execution variables (contact, month, campaign, day, duration)
+    are strictly forbidden.
+
     Args:
-        X: Feature dataframe.
+        X: Feature dataframe (must contain only canonical pre-campaign features).
 
     Returns:
         Dict mapping dimension name to dictionary of (subgroup_name -> boolean mask).
     """
+    validate_pre_campaign_feature_contract(X.columns, raise_on_violation=True)
     subgroups: Dict[str, Dict[str, pd.Series]] = {}
 
-    # 1. Contact History
+    # 1. Prior Contact History (Previously contacted vs Never contacted)
     if "pdays" in X.columns:
         pdays_series = X["pdays"].fillna(-1)
-        subgroups["Contact History"] = {
+        subgroups["Prior Contact History"] = {
             "Previously Contacted (pdays != -1)": pdays_series != -1,
             "Never Contacted (pdays == -1)": pdays_series == -1,
         }
@@ -239,7 +256,7 @@ def build_subgroup_definitions(X: pd.DataFrame) -> Dict[str, Dict[str, pd.Series
             "Prior Unknown / Missing": X["poutcome"].isna() | (X["poutcome"] == "unknown"),
         }
 
-    # 3. Debt & Loans
+    # 3. Debt Burden
     if "housing" in X.columns and "loan" in X.columns:
         subgroups["Debt Burden"] = {
             "Debt-Free (No Housing & No Loan)": (X["housing"] == "no") & (X["loan"] == "no"),
@@ -279,30 +296,52 @@ def build_subgroup_definitions(X: pd.DataFrame) -> Dict[str, Dict[str, pd.Series
             "60+ years": age >= 60,
         }
 
-    # 7. Campaign Outreach Intensity
-    if "campaign" in X.columns:
-        camp = X["campaign"].fillna(1)
-        subgroups["Campaign Outreach Intensity"] = {
-            "1 contact": camp == 1,
-            "2 contacts": camp == 2,
-            "3 contacts": camp == 3,
-            "4 - 5 contacts": (camp >= 4) & (camp <= 5),
-            "6 - 10 contacts": (camp >= 6) & (camp <= 10),
-            "> 10 contacts": camp > 10,
+    # 7. Job Category (legitimate pre-campaign CRM profile)
+    if "job" in X.columns:
+        jobs = [
+            "management", "blue-collar", "technician", "admin.",
+            "services", "retired", "self-employed", "entrepreneur",
+            "unemployed", "housemaid", "student"
+        ]
+        job_dict = {j.capitalize(): X["job"] == j for j in jobs if (X["job"] == j).any()}
+        if (X["job"] == "unknown").any():
+            job_dict["Unknown Job"] = X["job"] == "unknown"
+        subgroups["Job Category"] = job_dict
+
+    # 8. Education Tier (legitimate pre-campaign CRM profile)
+    if "education" in X.columns:
+        subgroups["Education Tier"] = {
+            "Tertiary Education": X["education"] == "tertiary",
+            "Secondary Education": X["education"] == "secondary",
+            "Primary Education": X["education"] == "primary",
+            "Unknown Education": X["education"].isna() | (X["education"] == "unknown"),
         }
 
-    # 8. Communication Channel
-    if "contact" in X.columns:
-        subgroups["Contact Communication Channel"] = {
-            "Cellular": X["contact"] == "cellular",
-            "Telephone": X["contact"] == "telephone",
-            "Unknown": X["contact"].isna() | (X["contact"] == "unknown"),
+    # 9. Marital Status (legitimate pre-campaign CRM profile)
+    if "marital" in X.columns:
+        subgroups["Marital Status"] = {
+            "Married": X["marital"] == "married",
+            "Single": X["marital"] == "single",
+            "Divorced": X["marital"] == "divorced",
         }
 
-    # 9. Contact Month
-    if "month" in X.columns:
-        months = ["mar", "sep", "oct", "dec", "apr", "feb", "aug", "jun", "nov", "jul", "jan", "may"]
-        subgroups["Outreach Month"] = {m.capitalize(): X["month"] == m for m in months if (X["month"] == m).any()}
+    # Engineering safeguard: Verify that no forbidden feature appears in any subgroup dimension
+    forbidden_dim_names = {
+        "contact",
+        "communication channel",
+        "contact communication channel",
+        "month",
+        "outreach month",
+        "campaign",
+        "campaign outreach intensity",
+        "day",
+        "day_of_week",
+        "contact_day_of_month",
+        "duration",
+        "y",
+    }
+    for dim_name in subgroups.keys():
+        assert dim_name.lower() not in forbidden_dim_names, f"Forbidden dimension '{dim_name}' in subgroups"
 
     return subgroups
 
@@ -322,7 +361,8 @@ def analyze_subgroups(
     Returns:
         pd.DataFrame: Formatted subgroup metrics table.
     """
-    subgroup_definitions = build_subgroup_definitions(X_dev)
+    X_clean = select_canonical_pre_campaign_features(X_dev)
+    subgroup_definitions = build_subgroup_definitions(X_clean)
     rows: List[Dict[str, Any]] = []
 
     for dim_name, group_dict in subgroup_definitions.items():
@@ -401,30 +441,32 @@ def analyze_false_positives_and_missed_positives(
     def profile_cohort(df: pd.DataFrame) -> Dict[str, Any]:
         bal = df["balance"].fillna(0) if "balance" in df.columns else pd.Series(0)
         age = df["age"] if "age" in df.columns else pd.Series(0)
-        camp = df["campaign"].fillna(1) if "campaign" in df.columns else pd.Series(1)
         pdays = df["pdays"].fillna(-1) if "pdays" in df.columns else pd.Series(-1)
 
         poutcome_dist = df["poutcome"].value_counts(normalize=True).to_dict() if "poutcome" in df.columns else {}
         job_top3 = df["job"].value_counts(normalize=True).head(3).to_dict() if "job" in df.columns else {}
-        month_top3 = df["month"].value_counts(normalize=True).head(3).to_dict() if "month" in df.columns else {}
+        education_top3 = df["education"].value_counts(normalize=True).head(3).to_dict() if "education" in df.columns else {}
+        marital_dist = df["marital"].value_counts(normalize=True).to_dict() if "marital" in df.columns else {}
 
         return {
             "count": len(df),
-            "mean_score": float(df["score"].mean()),
-            "median_score": float(df["score"].median()),
-            "mean_age": float(age.mean()),
-            "median_age": float(age.median()),
-            "mean_balance": float(bal.mean()),
-            "median_balance": float(bal.median()),
-            "mean_campaign": float(camp.mean()),
-            "pct_previously_contacted": float((pdays != -1).mean() * 100),
-            "pct_prior_success": float((df["poutcome"] == "success").mean() * 100) if "poutcome" in df.columns else 0.0,
-            "pct_debt_free": float(((df["housing"] == "no") & (df["loan"] == "no")).mean() * 100) if ("housing" in df.columns and "loan" in df.columns) else 0.0,
-            "pct_housing_loan": float((df["housing"] == "yes").mean() * 100) if "housing" in df.columns else 0.0,
-            "pct_cellular": float((df["contact"] == "cellular").mean() * 100) if "contact" in df.columns else 0.0,
+            "mean_score": float(df["score"].mean()) if len(df) > 0 else 0.0,
+            "median_score": float(df["score"].median()) if len(df) > 0 else 0.0,
+            "mean_age": float(age.mean()) if len(df) > 0 else 0.0,
+            "median_age": float(age.median()) if len(df) > 0 else 0.0,
+            "mean_balance": float(bal.mean()) if len(df) > 0 else 0.0,
+            "median_balance": float(bal.median()) if len(df) > 0 else 0.0,
+            "pct_previously_contacted": float((pdays != -1).mean() * 100) if len(df) > 0 else 0.0,
+            "pct_never_contacted": float((pdays == -1).mean() * 100) if len(df) > 0 else 0.0,
+            "pct_prior_success": float((df["poutcome"] == "success").mean() * 100) if ("poutcome" in df.columns and len(df) > 0) else 0.0,
+            "pct_debt_free": float(((df["housing"] == "no") & (df["loan"] == "no")).mean() * 100) if ("housing" in df.columns and "loan" in df.columns and len(df) > 0) else 0.0,
+            "pct_housing_loan": float((df["housing"] == "yes").mean() * 100) if ("housing" in df.columns and len(df) > 0) else 0.0,
+            "pct_personal_loan": float((df["loan"] == "yes").mean() * 100) if ("loan" in df.columns and len(df) > 0) else 0.0,
+            "pct_negative_balance": float((bal < 0).mean() * 100) if len(df) > 0 else 0.0,
             "poutcome_dist": poutcome_dist,
             "job_top3": job_top3,
-            "month_top3": month_top3,
+            "education_top3": education_top3,
+            "marital_dist": marital_dist,
         }
 
     profile_tp = profile_cohort(tp_df)
@@ -441,6 +483,27 @@ def analyze_false_positives_and_missed_positives(
     profile_highest_fn = profile_cohort(highest_fn)
     profile_lowest_tp = profile_cohort(lowest_tp)
 
+    fn_vs_tp_comparison = {
+        "fn_pct_never_contacted": profile_fn["pct_never_contacted"],
+        "tp_pct_never_contacted": profile_tp["pct_never_contacted"],
+        "fn_pct_prior_success": profile_fn["pct_prior_success"],
+        "tp_pct_prior_success": profile_tp["pct_prior_success"],
+        "fn_median_balance": profile_fn["median_balance"],
+        "tp_median_balance": profile_tp["median_balance"],
+        "fn_mean_balance": profile_fn["mean_balance"],
+        "tp_mean_balance": profile_tp["mean_balance"],
+        "fn_pct_debt_free": profile_fn["pct_debt_free"],
+        "tp_pct_debt_free": profile_tp["pct_debt_free"],
+        "fn_pct_housing_loan": profile_fn["pct_housing_loan"],
+        "tp_pct_housing_loan": profile_tp["pct_housing_loan"],
+        "fn_pct_personal_loan": profile_fn["pct_personal_loan"],
+        "tp_pct_personal_loan": profile_tp["pct_personal_loan"],
+        "fn_mean_score": profile_fn["mean_score"],
+        "tp_mean_score": profile_tp["mean_score"],
+        "fn_median_score": profile_fn["median_score"],
+        "tp_median_score": profile_tp["median_score"],
+    }
+
     return {
         "profile_tp": profile_tp,
         "profile_fp": profile_fp,
@@ -448,6 +511,7 @@ def analyze_false_positives_and_missed_positives(
         "profile_tn": profile_tn,
         "profile_highest_fn_boundary": profile_highest_fn,
         "profile_lowest_tp_boundary": profile_lowest_tp,
+        "fn_vs_tp_comparison": fn_vs_tp_comparison,
     }
 
 
@@ -473,7 +537,8 @@ def compute_permutation_feature_importance(
     Returns:
         Tuple[pd.DataFrame, pd.DataFrame]: (Permutation importance summary table, Impurity importance summary table).
     """
-    X_clean = drop_duration(X_dev)
+    X_clean = select_canonical_pre_campaign_features(X_dev)
+    validate_pre_campaign_feature_contract(X_clean.columns, raise_on_violation=True)
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
     rf_params = {
@@ -626,8 +691,8 @@ def compare_rf_vs_business_rule(
             "median_balance": float(bal.median()),
             "pct_previously_contacted": float((pdays != -1).mean() * 100),
             "pct_debt_free": float(((df["housing"] == "no") & (df["loan"] == "no")).mean() * 100) if ("housing" in df.columns and "loan" in df.columns) else 0.0,
-            "top_months": df["month"].value_counts(normalize=True).head(3).to_dict() if "month" in df.columns else {},
             "top_jobs": df["job"].value_counts(normalize=True).head(3).to_dict() if "job" in df.columns else {},
+            "top_education": df["education"].value_counts(normalize=True).head(3).to_dict() if "education" in df.columns else {},
         }
 
     return {
@@ -755,14 +820,14 @@ def generate_diagnostic_figures(
     # Figure 7: Top Permutation Importances with Uncertainty
     # -------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(9, 6), dpi=300)
-    df_top_perm = perm_importance_df.head(10).sort_values(by="mean_importance", ascending=True)
+    df_top_perm = perm_importance_df.sort_values(by="mean_importance", ascending=True)
 
     y_pos = np.arange(len(df_top_perm))
     ax.barh(y_pos, df_top_perm["mean_importance"], xerr=df_top_perm["std_importance"], color="#3b528b", alpha=0.85, edgecolor="#1f2d4d", capsize=4, height=0.6)
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(df_top_perm["feature"], fontsize=11)
-    ax.set_title("Top 10 Pre-Call Permutation Feature Importances (PR-AUC Drop on Held-Out Folds)", fontsize=12, fontweight="bold", pad=12)
+    ax.set_title("Pre-Call Permutation Feature Importances (PR-AUC Drop on Held-Out Folds)", fontsize=12, fontweight="bold", pad=12)
     ax.set_xlabel("Mean Decrease in Validation PR-AUC (Error Bars = ±1 Fold Std Dev)", fontsize=11)
     ax.grid(axis="x")
     plt.tight_layout()
@@ -777,20 +842,28 @@ def generate_diagnostic_figures(
     # Figure 8: Subgroup Precision@capacity vs. Population Baseline
     # -------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(10, 6.5), dpi=300)
-    # Select key representative subgroups across dimensions (only those meeting N >= 30 safeguard)
+    # Select key representative pre-campaign subgroups (only those meeting N >= 30 safeguard)
     key_subgroups = [
         "Prior Success",
         "Prior Failure",
         "Previously Contacted (pdays != -1)",
         "Never Contacted (pdays == -1)",
         "Debt-Free (No Housing & No Loan)",
+        "Housing Loan Only",
+        "Dual Loan Burden (Housing & Loan)",
         "€5,000+",
         "€2,000 - €4,999",
         "€500 - €1,999",
         "€0 - €499",
         "60+ years",
         "< 30 years",
-        "Cellular",
+        "30 - 39 years",
+        "Tertiary Education",
+        "Secondary Education",
+        "Retired",
+        "Management",
+        "Married",
+        "Single",
     ]
     df_plot_sub = subgroup_df[subgroup_df["subgroup"].isin(key_subgroups)].dropna(subset=["precision_at_k"]).copy()
     df_plot_sub = df_plot_sub.sort_values(by="precision_at_k", ascending=True)
@@ -829,6 +902,7 @@ def generate_diagnostic_figures(
     bars1 = ax1.bar(categories, counts, color=colors, alpha=0.85, edgecolor="#333333", width=0.55)
     ax1.set_title(f"Composition of Top {k_oof:,} Leads (Jaccard = {rf_br_comparison['jaccard_similarity']:.3f})", fontsize=11.5, fontweight="bold", pad=10)
     ax1.set_ylabel("Number of Leads", fontsize=11)
+    ax1.set_ylim(0, max(counts) * 1.15)
     ax1.grid(axis="y")
     for b, count in zip(bars1, counts):
         ax1.text(b.get_x() + b.get_width() / 2, b.get_height() + 40, f"{count:,}", ha="center", va="bottom", fontweight="bold")
@@ -840,6 +914,7 @@ def generate_diagnostic_figures(
     bars2 = ax2.bar(categories, conversions, color=colors, alpha=0.85, edgecolor="#333333", width=0.55)
     ax2.set_title("Conversions Captured by Lead Cohort", fontsize=11.5, fontweight="bold", pad=10)
     ax2.set_ylabel("Actual Subscriptions Captured", fontsize=11)
+    ax2.set_ylim(0, max(conversions) * 1.18)
     ax2.grid(axis="y")
     for b, conv, prec in zip(bars2, conversions, precisions):
         ax2.text(b.get_x() + b.get_width() / 2, b.get_height() + 20, f"{conv:,}\n({prec:.1f}% prec)", ha="center", va="bottom", fontweight="bold")
@@ -880,8 +955,9 @@ def run_full_diagnostics(
     X, y = load_bank_marketing_data()
     n_total = len(X)
 
-    # Enforce pre-call leakage quarantine
-    X_clean = drop_duration(X)
+    # Enforce canonical pre-campaign feature contract
+    X_clean = select_canonical_pre_campaign_features(X)
+    validate_pre_campaign_feature_contract(X_clean.columns, raise_on_violation=True)
 
     # 80/20 train/test split - test set is strictly quarantined and not accessed
     X_dev, X_test_frozen, y_dev, y_test_frozen = split_data(

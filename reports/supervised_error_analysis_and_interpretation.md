@@ -1,326 +1,360 @@
-# Phase 4 Deliverable: Supervised Model Interpretation & Error Analysis Report
+# Phase 4 Deliverable: Supervised Model Interpretation & Error Analysis Report (Remediated)
 
 **Project**: UCI Bank Marketing Term Deposit Outreach Optimization  
-**Phase**: Phase 4 Deliverable — Supervised Model Interpretation & Error Analysis  
+**Phase**: Phase 4 Deliverable — Supervised Model Interpretation & Error Analysis (Remediated Under Canonical Feature Contract)  
 **Frozen Model Candidate**: `RandomForestClassifier(n_estimators=100, max_depth=12, class_weight=None, random_state=42, n_jobs=-1)`  
-**Date**: September 2026  
-**Status**: Completed & Evaluated on Development Partition  
+**Date**: September 2026 (Updated Post-Feature Availability Audit)  
+**Status**: Completed & Evaluated Strictly on Development Partition  
 
 ---
 
-## 1. Executive Summary & Objective
+## 1. Executive Summary & Correction Protocol
 
-The primary objective of this phase is to conduct an in-depth forensic investigation into the behavior, ranking mechanisms, subgroup performance, and failure modes of the **frozen supervised candidate model** (`RandomForest(class_weight=None)`).
+### Feature Contract & Prediction Timestamp
+Following the prediction-time feature availability audit (documented in [`reports/prediction_time_feature_contract_audit.md`](file:///c:/Users/usasl/PycharmProjects/uci_banking_ML_project/reports/prediction_time_feature_contract_audit.md)), all diagnostics in this phase have been recomputed under the canonical pre-campaign feature contract:
+- **Canonical Decision**: *"Before outreach begins for a new campaign, rank an eligible prospect pool and determine which prospects should receive the limited outbound call capacity."*
+- **Canonical Prediction Timestamp**: **IMMEDIATELY BEFORE any contact in the new/current campaign occurs.**
+- **Canonical Raw Features (11)**: `age`, `job`, `marital`, `education`, `default`, `balance`, `housing`, `loan`, `pdays`, `previous`, `poutcome`.
+- **Forbidden Execution Variables (Purged)**: `duration` (post-call target leakage), `contact` (telecommunication channel), `month` (campaign execution month), `contact_day_of_month` / `day_of_week` / `day` (dialing day), `campaign` (cumulative attempts during current campaign), and target `y`.
 
-Under an operational outreach capacity constraint ($\text{capacity\_fraction} = 5{,}000 / 45{,}211 \approx 0.11059$), the goal is not model selection or hyperparameter tuning, but diagnostic understanding:
-1. **Feature Utilization**: Which pre-call customer attributes influence the model's prioritization ranking?
-2. **Ranking Successes & Error Categorization**: How does the model perform within the top-capacity cohort, and what is the exact observable profile of False Positives and Missed Positives?
-3. **Subgroup Heterogeneity**: Which customer demographics and historical interaction segments correspond to strong performance, and where does predictive resolution degrade?
-4. **Differentiation from Domain Heuristics**: How do the prospects selected by Random Forest differ from those chosen by the frozen Business-Rule baseline, and what accounts for the model's conversion advantage?
+### Holdout Test Set Protocol Rectification
+> [!IMPORTANT]
+> **Holdout Status Disclosure**:
+> The holdout was not used for supervised candidate fitting or model selection during the remediation pass. However, its labels were inadvertently included in a full-population business-rule reference calculation. No supervised model was rescored on the holdout.
+> 
+> The holdout partition ($N=9,043$) remains strictly quarantined and will not be accessed again. Furthermore, this is distinguished from the earlier historical balanced-RF holdout evaluation, which remains an old historical artifact and is not a valid independent test estimate for the current compliant unweighted RF.
+> 
+> All benchmarks in this report use strictly the **80% development-partition business-rule result**:
+> - **Conversions@4000**: **1,321**
+> - **Precision@capacity**: **33.025%**
+> - **Lift@capacity**: **2.82x**
 
 ### Methodological Guardrails
-- **Frozen Architecture**: No new model families, hyperparameter tuning, or probability calibration were introduced.
-- **Partition Isolation**: The held-out 20% test set (9,043 records) was **not** revisited during this analysis; its previously recorded single evaluation remains frozen.
-- **Development-Only Diagnostics**: All out-of-fold (OOF) predictions, subgroup breakdowns, permutation importances, and error profiling were conducted strictly on the 80% development partition (36,168 records).
-- **Leakage Contract**: Post-call `duration` was programmatically quarantined and stripped before all preprocessing, modeling, and feature importance workflows.
-- **Capacity Constraint**: Evaluated at $k_{\text{oof}} = \text{round}(36{,}168 \times 5{,}000 / 45{,}211) = 4{,}000$ contacts.
+1. **Frozen Candidate Architecture**: No hyperparameter tuning, model family modifications, or probability recalibration were introduced.
+2. **Strict Development Scope**: All out-of-fold (OOF) predictions, subgroup analyses, error profiling, permutation importances, and baseline comparisons were executed strictly on the 80% development partition ($N_{\text{dev}} = 36,168$).
+3. **Proportional Capacity Constraint**:
+   $$\text{capacity\_fraction} = \frac{5{,}000}{45{,}211} \approx 0.11059255 \implies k_{\text{oof}} = \text{round}(36{,}168 \times 0.11059255) = 4{,}000 \quad \text{calls}$$
 
 ---
 
-## 2. Diagnostic Methodology & Development OOF Design
+## 2. Diagnostic Methodology & Clean OOF Design
 
-To evaluate ranking error without in-sample training optimism and without snooping the frozen test partition, an **Out-of-Fold (OOF) Cross-Validation Scheme** was executed:
+To evaluate ranking error without in-sample training optimism, a 5-fold cross-validation scheme was executed across the development partition:
 
 ```
 Development Partition (N = 36,168 records, 80% of total)
-  ├── Fold 1 Val (7,234 rows) <── Predicted by RF fit on Folds 2-5 Train (28,934 rows)
-  ├── Fold 2 Val (7,234 rows) <── Predicted by RF fit on Folds 1,3-5 Train (28,934 rows)
-  ├── Fold 3 Val (7,234 rows) <── Predicted by RF fit on Folds 1-2,4-5 Train (28,934 rows)
-  ├── Fold 4 Val (7,233 rows) <── Predicted by RF fit on Folds 1-3,5 Train (28,935 rows)
-  └── Fold 5 Val (7,233 rows) <── Predicted by RF fit on Folds 1-4 Train (28,935 rows)
+  ├── Fold 1 Val (7,234 rows) <── Scored by RF fitted on Folds 2-5 Train (28,934 rows)
+  ├── Fold 2 Val (7,234 rows) <── Scored by RF fitted on Folds 1,3-5 Train (28,934 rows)
+  ├── Fold 3 Val (7,234 rows) <── Scored by RF fitted on Folds 1-2,4-5 Train (28,934 rows)
+  ├── Fold 4 Val (7,233 rows) <── Scored by RF fitted on Folds 1-3,5 Train (28,935 rows)
+  └── Fold 5 Val (7,233 rows) <── Scored by RF fitted on Folds 1-4 Train (28,935 rows)
 ```
 
 ### Protocol & Verification
-1. **Resampling**: `StratifiedKFold(n_splits=5, shuffle=True, random_state=42)`.
-2. **Strict Isolation**: For every fold, the full pre-call pipeline (`PreCallFeatureEngineer` + `ColumnTransformer`) was fit exclusively on that fold's training split.
-3. **Integrity Guarantees**:
-   - Every development row received **exactly one** out-of-fold prediction ($\sum N_i = 36{,}168$).
-   - Zero training observations were scored by a model trained on their own data.
-   - Zero missing scores or infinite values were produced.
-   - Post-call `duration` was absent from all pipelines.
-
-> [!IMPORTANT]
-> **Diagnostic Nature of OOF Metrics**: OOF predictions eliminate training-set memorization, but they are development-partition diagnostics. They do **not** represent a new, independent estimate of final production generalization performance.
+- **Resampling Scheme**: `StratifiedKFold(n_splits=5, shuffle=True, random_state=42)`.
+- **Pipeline Isolation**: For every fold, preprocessing (`PreCallFeatureEngineer(enforce_contract=True)` + `ColumnTransformer`) was fit exclusively on that fold's training split.
+- **Contract Enforcement**: Every fold model verified that zero forbidden fields entered preprocessing or modeling (`validate_pre_campaign_feature_contract`).
+- **Integrity Guarantees**:
+  - Every development row received **exactly one** out-of-fold prediction ($\sum N_i = 36{,}168$).
+  - Zero observations were scored by a model trained on their own data.
+  - Zero missing scores were generated.
 
 ---
 
 ## 3. Capacity-Based Ranking Performance ($k_{\text{oof}} = 4{,}000$)
 
-Because outbound telemarketing operates under a hard outreach quota, default classification thresholds (e.g. 0.50) are economically irrelevant. Prospect lists are formed by selecting the top $k_{\text{oof}} = 4{,}000$ prospects ranked descending by predicted conversion score.
+In outbound telemarketing with a fixed dialer capacity, default 0.50 classification thresholds are operationally irrelevant. The top $k_{\text{oof}} = 4{,}000$ prospects ranked descending by predicted conversion score receive calls.
 
-### Formal Ranking Error Categories
+### Compliant Ranking Error Cohorts
 
 ```
                            Actual Positive (Subscriber)      Actual Negative (Non-Subscriber)
-Selected in Top 4,000       Top-k True Positive (TP = 1,908)   Top-k False Positive (FP = 2,092)   ---> Selected = 4,000 (k)
-Rejected (Ranks 4,001+)     Missed Positive (FN = 2,323)       Correctly Rejected (TN = 29,845)   ---> Rejected = 32,168
+Selected in Top 4,000       Top-k True Positive (TP = 1,656)   Top-k False Positive (FP = 2,344)   ---> Selected = 4,000 (k)
+Rejected (Ranks 4,001+)     Missed Positive (FN = 2,575)       Correctly Rejected (TN = 29,593)   ---> Rejected = 32,168
                                     |                                         |
                                     v                                         v
                          Total Positives = 4,231                  Total Negatives = 31,937         ---> Total Dev = 36,168
 ```
 
-### Empirical Capacity Ranking Metrics
+### Compliant Empirical Capacity Ranking Metrics
 
 | Metric | Development OOF Value | Operational Interpretation |
 | :--- | :---: | :--- |
 | **Development Population ($N_{\text{dev}}$)** | **36,168** | Eligible prospects in 80% development partition. |
 | **Outreach Capacity ($k_{\text{oof}}$)** | **4,000** | Budgeted call volume ($11.059\%$ capacity fraction). |
-| **Conversions Captured ($TP$)** | **1,908** | Subscribed term deposits within top 4,000 calls. |
-| **Top-k False Positives ($FP$)** | **2,092** | Non-converting prospects contacted in top 4,000 calls. |
-| **Missed Positives ($FN$)** | **2,323** | Actual subscribers not reached within top 4,000 calls. |
-| **Correctly Rejected ($TN$)** | **29,845** | Non-subscribers correctly excluded from call campaign. |
-| **Precision@capacity** | **47.70%** | Nearly 1 out of every 2 calls placed results in a subscription. |
-| **Recall@capacity** | **45.10%** | Captures $45.1\%$ of all available subscribers in top $11.1\%$ calls. |
-| **Lift@capacity** | **4.08x** | Delivers 4.08 times more conversions than random dialing. |
-| **Pooled OOF Diagnostic Capacity Cutoff** | **0.2387** | Prospect ranking score required to secure rank $\le 4{,}000$. |
+| **Conversions Captured ($TP$)** | **1,656** | Subscribed term deposits within top 4,000 calls. |
+| **Top-k False Positives ($FP$)** | **2,344** | Non-converting prospects contacted in top 4,000 calls. |
+| **Missed Positives ($FN$)** | **2,575** | Actual subscribers not reached within top 4,000 calls. |
+| **Correctly Rejected ($TN$)** | **29,593** | Non-subscribers correctly excluded from call campaign. |
+| **Precision@capacity** | **41.400%** | Over 4 out of 10 calls placed result in a term deposit. |
+| **Recall@capacity** | **39.140%** | Captures $39.14\%$ of all available subscribers in top $11.06\%$ calls. |
+| **Lift@capacity** | **3.539x** | Captures 3.54 times more conversions than random dialing. |
+| **Pooled OOF Diagnostic Cutoff** | **0.2007** | Prospect ranking score required to secure rank $\le 4{,}000$. |
+| **PR-AUC (Average Precision)** | **0.3758** | Global area under the precision-recall curve across all thresholds. |
+| **ROC-AUC** | **0.7339** | Global pairwise discrimination concordance. |
 
-### Mathematical Reconciliation Checks
-- $TP + FP = 1{,}908 + 2{,}092 = 4{,}000 = k_{\text{oof}}$ (Exact)
-- $TP + FN = 1{,}908 + 2{,}323 = 4{,}231 = \text{Total Positives}$ (Exact)
-- $TP + FP + FN + TN = 1{,}908 + 2{,}092 + 2{,}323 + 29{,}845 = 36{,}168 = N_{\text{dev}}$ (Exact)
+### Mathematical Reconciliation Identities
+- $TP + FP = 1{,}656 + 2{,}344 = 4{,}000 = k_{\text{oof}}$ (Exact)
+- $TP + FN = 1{,}656 + 2{,}575 = 4{,}231 = \text{Total Actual Positives}$ (Exact)
+- $TN + FP = 29{,}593 + 2{,}344 = 31{,}937 = \text{Total Actual Negatives}$ (Exact)
+- $TN + FN = 29{,}593 + 2{,}575 = 32{,}168 = N_{\text{dev}} - k_{\text{oof}}$ (Exact)
+- $TP + FP + FN + TN = 1{,}656 + 2{,}344 + 2{,}575 + 29{,}593 = 36{,}168 = N_{\text{dev}}$ (Exact)
 
 ---
 
 ## 4. Score-Distribution Findings & Cutoff Terminology
 
 ![OOF Score Distribution by Target](figures/05_oof_score_distribution.png)
-*Figure 1: Distribution of OOF predicted conversion scores for actual subscribers ($y=\text{'yes'}$) vs. non-subscribers ($y=\text{'no'}$). The dashed red line denotes the pooled OOF diagnostic capacity cutoff ($0.2387$).*
+*Figure 1: Distribution of compliant OOF predicted conversion scores for actual subscribers ($y=\text{'yes'}$, orange) vs. non-subscribers ($y=\text{'no'}$, blue). The dashed red line marks the pooled OOF diagnostic capacity cutoff ($0.2007$).*
 
 ![Ranked Score Curve](figures/06_ranked_score_curve.png)
-*Figure 2: Descending ranked score curve across all 36,168 development prospects, highlighting the selected top-capacity cohort (green) versus the rejected population (grey).*
+*Figure 2: Descending ranked score curve across all 36,168 development prospects, highlighting the selected top-capacity cohort (green) vs. rejected prospects (grey).*
 
 ### Analytical Insights from Score Distributions
-1. **Bimodal Separation with Substantial Overlap**:
-   - Non-subscribers are heavily clustered near zero: median score is **0.052**, mean is **0.098**, and 75% of non-subscribers score below **0.138**.
-   - Actual subscribers exhibit a broad distribution with a heavy upper tail: median score is **0.183**, mean is **0.272**, and 45.1% score above the cutoff of **0.2387**.
-2. **The Nature of the Pooled OOF Diagnostic Capacity Cutoff**:
-   - The capacity threshold corresponds to a score of **$0.2387$**.
-   - **Crucial Methodological Caveat**: This score is formally a **pooled OOF diagnostic capacity cutoff**. It is formed by aggregating out-of-fold predictions produced across five separately fitted fold models. While highly valuable for development diagnostics:
-     - It is **not** a deployable operating threshold for production scoring.
-     - Model scores are currently uncalibrated.
-     - Absolute score comparability across separately fitted fold models is not mathematically guaranteed.
+1. **Separation and Distribution Shape**:
+   - Non-subscribers cluster heavily near zero: median score is **0.071**, mean is **0.080**, and over 80% score below **0.10**.
+   - Actual subscribers exhibit a long right tail with a median of **0.125** and mean of **0.248**; 39.14% score above the cutoff of **0.2007**.
+2. **Terminology: "Pooled OOF Diagnostic Capacity Cutoff"**:
+   - The capacity boundary corresponds to a score of **0.2007**.
+   - **Critical Methodological Clarification**: This score is strictly a **pooled OOF diagnostic capacity cutoff**, not a production operational threshold. It represents the score of the 4,000th prospect when pooling uncalibrated out-of-fold ranking scores across 5 independently fitted models.
+   - In live deployment, prospect selection will be performed by scoring the entire candidate pool in batch and taking the top $k$ prospects, rather than applying a fixed numeric cutoff.
 3. **Threshold vs. Capacity Outreach**:
-   - Prospects with scores $\ge 0.50$ number only **1,108** in total. If a traditional 0.50 decision threshold had been applied, the sales team would have contacted only 1,108 customers, underutilizing available call capacity by **72.3%** and capturing only 876 conversions (leaving over 1,030 viable conversions on the table).
+   - Prospects with scores $\ge 0.50$ number only **659** in total. A naive 0.50 threshold would utilize only **16.5%** of available capacity, contacting 659 prospects and capturing only 522 conversions (abandoning 1,134 viable conversions).
 
 ---
 
-## 5. Subgroup Performance Breakdown
+## 5. Subgroup Performance Breakdown (Legitimate Dimensions Only)
 
 ![Subgroup Precision at Capacity](figures/08_subgroup_precision_and_selection.png)
-*Figure 3: Selected subgroup Precision@capacity (% converting in top 4,000) for key customer cohorts compared against population base rate (red dashed line) and overall top-k precision (blue dotted line). Subgroups with $N_{\text{selected}} < 30$ are omitted to prevent small-sample distortion.*
+*Figure 3: Selected subgroup Precision@capacity (% converting in top 4,000) across legitimate pre-campaign dimensions compared against the development base rate (11.70%, red dashed line) and overall top-k precision (41.40%, blue dotted line). All displayed subgroups satisfy the $N_{\text{selected}} \ge 30$ sample size safeguard.*
 
-### Prior-Contact Canonical Contract Audit
-An audit was conducted on the source data column `pdays`:
-- `pdays == 0`: **0 records (0.0%)**
-- `pdays == -1`: **36,954 records (81.7%)** (Never contacted previously)
-- `pdays > 0`: **8,257 records (18.3%)** (Previously contacted; values range from 1 to 871 days)
-Because zero records have `pdays == 0`, the conditions `pdays > 0` and `pdays != -1` are strictly mathematically equivalent in this dataset. However, in accordance with the project's canonical feature contract, all code and reporting are formally standardized on **`pdays != -1`**.
+### Purge of Non-Compliant Dimensions
+In accordance with the pre-campaign feature contract, all subgroup breakdowns based on **`contact` (channel)**, **`month` (calendar timing)**, **`campaign` (call count)**, and **`day` (contact day)** have been **completely removed**. Those variables describe execution choices and are unknown when ranking leads ahead of campaign launch.
 
-### Small-Subgroup Safeguards
-To prevent misleading conclusions drawn from small sample sizes, a minimum selected-sample safeguard of **$N_{\text{selected}} \ge 30$** is enforced for interpreting subgroup precision:
-- Subgroups with $N_{\text{selected}} < 30$ have their raw counts reported, but precision estimates are formally flagged as **`[Unstable: N < 30]`**.
-- **Crucial Rule**: In particular, **do not substantively interpret the dual-loan subgroup precision based on only 13 selected prospects** ($N=13$, conversions=6).
+### Small-Subgroup Safeguard ($N_{\text{selected}} \ge 30$)
+Subgroups with fewer than 30 selected prospects are flagged as `[Unstable: N < 30]`. In the compliant recomputation, all major demographic, financial, and historical interaction categories exceed this threshold.
 
-### Subgroup Performance Table
+### Compliant Subgroup Performance Table
 
-| Dimension | Subgroup | Population ($N$) | Prevalence | Selected in Top-k | Selection Rate | Conversions Captured | Precision@k | Recall@k | Lift@k | Mean Score |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Contact History** | **Previously Contacted (`pdays != -1`)** | 6,616 | 23.08% | 2,176 | 32.89% | 1,170 | **53.77%** | **76.62%** | 2.33x | 0.2393 |
-| | **Never Contacted (`pdays == -1`)** | 29,552 | 9.15% | 1,824 | 6.17% | 738 | **40.46%** | **27.29%** | 4.42x | 0.0883 |
-| **Prior Outcome** | **Prior Success** | 1,222 | 64.57% | 1,202 | 98.36% | 779 | **64.81%** | **98.73%** | 1.00x | 0.6548 |
-| | **Prior Failure** | 3,923 | 12.72% | 531 | 13.54% | 219 | **41.24%** | 43.89% | 3.24x | 0.1633 |
-| | **Prior Other** | 1,471 | 16.25% | 443 | 30.12% | 172 | **38.83%** | 71.97% | 2.39x | 0.2030 |
-| | **Prior Unknown / Missing** | 29,552 | 9.15% | 1,824 | 6.17% | 738 | **40.46%** | 27.29% | 4.42x | 0.0883 |
-| **Debt Burden** | **Debt-Free (No Housing & No Loan)** | 14,357 | 16.92% | 3,197 | 22.27% | 1,530 | **47.86%** | **62.99%** | 2.83x | 0.1601 |
-| | **Housing Loan Only** | 15,960 | 7.88% | 673 | 4.22% | 324 | **48.14%** | 25.76% | 6.11x | 0.0877 |
-| | **Personal Loan Only** | 1,972 | 8.98% | 117 | 5.93% | 48 | **41.03%** | 27.12% | 4.57x | 0.0988 |
-| | **Dual Loan Burden (Both)** | 3,879 | 6.75% | 13 | 0.34% | 6 | *[Unstable: N=13 < 30]* | 2.29% | — | 0.0768 |
-| **Balance Tiers** | **< €0** | 2,981 | 5.60% | 24 | 0.80% | 14 | *[Unstable: N=24 < 30]* | 8.38% | — | 0.0833 |
-| | **€0 - €499** | 15,855 | 9.92% | 1,277 | 8.05% | 619 | **48.47%** | 39.35% | 4.89x | 0.1005 |
-| | **€500 - €1,999** | 10,511 | 12.98% | 1,388 | 13.21% | 641 | **46.18%** | 47.00% | 3.56x | 0.1293 |
-| | **€2,000 - €4,999** | 4,519 | 17.13% | 888 | 19.65% | 444 | **50.00%** | 57.36% | 2.92x | 0.1580 |
-| | **€5,000+** | 2,282 | 15.73% | 423 | 18.54% | 190 | **44.92%** | 52.92% | 2.86x | 0.1610 |
-| **Age Tiers** | **< 30 years** | 4,270 | 17.54% | 851 | 19.93% | 397 | **46.65%** | 53.00% | 2.66x | 0.1572 |
-| | **30 - 39 years** | 14,481 | 10.59% | 1,143 | 7.89% | 547 | **47.86%** | 35.66% | 4.52x | 0.1062 |
-| | **40 - 49 years** | 9,323 | 9.16% | 600 | 6.44% | 312 | **52.00%** | 36.53% | 5.68x | 0.0947 |
-| | **50 - 59 years** | 6,647 | 9.12% | 491 | 7.39% | 239 | **48.68%** | 39.44% | 5.34x | 0.1030 |
-| | **60+ years** | 1,447 | 33.72% | 915 | 63.23% | 413 | **45.14%** | **84.63%** | 1.34x | 0.3067 |
-| **Campaign Contacts** | **1 contact** | 14,026 | 14.59% | 2,256 | 16.08% | 1,105 | **48.98%** | **54.01%** | 3.36x | 0.1387 |
-| | **2 contacts** | 10,023 | 11.15% | 1,013 | 10.11% | 485 | **47.88%** | 43.38% | 4.29x | 0.1133 |
-| | **3 contacts** | 4,412 | 11.26% | 368 | 8.34% | 180 | **48.91%** | 36.22% | 4.34x | 0.1055 |
-| | **4 - 5 contacts** | 4,224 | 8.66% | 248 | 5.87% | 107 | **43.15%** | 29.24% | 4.98x | 0.0933 |
-| | **6 - 10 contacts** | 2,538 | 6.50% | 101 | 3.98% | 28 | **27.72%** | 16.97% | 4.26x | 0.0839 |
-| | **> 10 contacts** | 945 | 4.13% | 14 | 1.48% | 3 | *[Unstable: N=14 < 30]* | 7.69% | — | 0.0690 |
-| **Contact Channel** | **Cellular** | 23,465 | 14.83% | 3,500 | 14.92% | 1,702 | **48.63%** | **48.89%** | 3.28x | 0.1450 |
-| | **Telephone** | 2,317 | 13.94% | 442 | 19.08% | 187 | **42.31%** | 57.89% | 3.03x | 0.1484 |
-| | **Unknown Channel** | 10,386 | 4.11% | 58 | 0.56% | 19 | **32.76%** | 4.45% | 7.97x | 0.0457 |
-| **Outreach Month**| **March** | 391 | 50.90% | 363 | 92.84% | 182 | **50.14%** | **91.46%** | 0.99x | 0.4118 |
-| | **September** | 451 | 45.23% | 359 | 79.60% | 179 | **49.86%** | **87.75%** | 1.10x | 0.3861 |
-| | **October** | 592 | 43.75% | 507 | 85.64% | 242 | **47.73%** | **93.44%** | 1.09x | 0.3815 |
-| | **December** | 178 | 47.19% | 132 | 74.16% | 71 | **53.79%** | **84.52%** | 1.14x | 0.3740 |
-| | **May** | 11,062 | 6.68% | 305 | 2.76% | 130 | **42.62%** | **17.59%** | 6.38x | 0.0690 |
+| Dimension | Subgroup | Population ($N$) | Prevalence | Selected in Top-k | Selection Rate | Conversions Captured | Precision@k | Recall@k | Lift@k | Mean Score | Safeguard Status |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Prior Contact History** | **Previously Contacted (`pdays != -1`)** | 6,584 | 22.84% | 2,456 | 37.30% | 1,165 | **47.43%** | **77.46%** | 2.08x | 0.2293 | Robust ($N \ge 30$) |
+| | **Never Contacted (`pdays == -1`)** | 29,584 | 9.22% | 1,544 | 5.22% | 491 | **31.80%** | **18.01%** | 3.45x | 0.0919 | Robust ($N \ge 30$) |
+| **Prior Outcome** | **Prior Success** | 1,205 | 64.65% | 1,202 | 99.75% | 779 | **64.81%** | **100.00%** | 1.00x | 0.6447 | Robust ($N \ge 30$) |
+| | **Prior Failure** | 3,889 | 12.29% | 796 | 20.47% | 226 | **28.39%** | **47.28%** | 2.31x | 0.1262 | Robust ($N \ge 30$) |
+| | **Prior Other** | 1,485 | 16.50% | 453 | 30.51% | 158 | **34.88%** | **64.49%** | 2.11x | 0.1622 | Robust ($N \ge 30$) |
+| | **Prior Unknown / Missing** | 29,589 | 9.22% | 1,549 | 5.24% | 493 | **31.83%** | **18.07%** | 3.45x | 0.0919 | Robust ($N \ge 30$) |
+| **Debt Burden** | **Debt-Free (No Housing & No Loan)** | 13,702 | 18.25% | 3,307 | 24.14% | 1,362 | **41.19%** | **54.48%** | 2.26x | 0.1793 | Robust ($N \ge 30$) |
+| | **Housing Loan Only** | 16,653 | 8.02% | 541 | 3.25% | 247 | **45.66%** | **18.50%** | 5.70x | 0.0806 | Robust ($N \ge 30$) |
+| | **Personal Loan Only** | 2,284 | 7.66% | 92 | 4.03% | 28 | **30.43%** | **16.00%** | 3.97x | 0.0881 | Robust ($N \ge 30$) |
+| | **Dual Loan Burden (Both Loans)** | 3,529 | 6.26% | 60 | 1.70% | 19 | **31.67%** | **8.60%** | 5.06x | 0.0647 | Robust ($N \ge 30$) |
+| **Balance Sign** | **Negative Balance (< €0)** | 3,001 | 5.36% | 40 | 1.33% | 9 | **22.50%** | **5.59%** | 4.19x | 0.0592 | Robust ($N=40 \ge 30$) |
+| | **Zero Balance (€0)** | 2,809 | 8.33% | 141 | 5.02% | 61 | **43.26%** | **26.07%** | 5.19x | 0.0830 | Robust ($N \ge 30$) |
+| | **Positive Balance (> €0)** | 30,358 | 12.64% | 3,819 | 12.58% | 1,586 | **41.53%** | **41.35%** | 3.29x | 0.1257 | Robust ($N \ge 30$) |
+| **Balance Tiers** | **€0 - €499** | 15,855 | 9.92% | 1,262 | 7.96% | 544 | **43.11%** | **34.58%** | 4.34x | 0.0992 | Robust ($N \ge 30$) |
+| | **€500 - €1,999** | 10,511 | 12.98% | 1,353 | 12.87% | 539 | **39.84%** | **39.52%** | 3.07x | 0.1299 | Robust ($N \ge 30$) |
+| | **€2,000 - €4,999** | 4,519 | 17.13% | 908 | 20.09% | 396 | **43.61%** | **51.16%** | 2.55x | 0.1624 | Robust ($N \ge 30$) |
+| | **€5,000+** | 2,282 | 15.73% | 437 | 19.15% | 168 | **38.44%** | **46.80%** | 2.44x | 0.1654 | Robust ($N \ge 30$) |
+| **Age Tiers** | **< 30 years** | 4,270 | 17.54% | 1,167 | 27.33% | 438 | **37.53%** | **58.48%** | 2.14x | 0.1617 | Robust ($N \ge 30$) |
+| | **30 - 39 years** | 14,481 | 10.59% | 1,011 | 6.98% | 403 | **39.86%** | **26.27%** | 3.76x | 0.1053 | Robust ($N \ge 30$) |
+| | **40 - 49 years** | 9,323 | 9.16% | 471 | 5.05% | 233 | **49.47%** | **27.28%** | 5.40x | 0.0948 | Robust ($N \ge 30$) |
+| | **50 - 59 years** | 6,647 | 9.12% | 396 | 5.96% | 169 | **42.68%** | **27.89%** | 4.68x | 0.1022 | Robust ($N \ge 30$) |
+| | **60+ years** | 1,447 | 33.72% | 955 | 66.00% | 413 | **43.25%** | **84.63%** | 1.28x | 0.3102 | Robust ($N \ge 30$) |
+| **Job Category** | **Management** | 7,511 | 13.86% | 941 | 12.53% | 412 | **43.78%** | **39.58%** | 3.16x | 0.1346 | Robust ($N \ge 30$) |
+| | **Blue-collar** | 7,830 | 7.29% | 242 | 3.09% | 96 | **39.67%** | **16.81%** | 5.44x | 0.0762 | Robust ($N \ge 30$) |
+| | **Technician** | 6,068 | 10.93% | 497 | 8.19% | 200 | **40.24%** | **30.17%** | 3.68x | 0.1099 | Robust ($N \ge 30$) |
+| | **Admin.** | 4,141 | 12.29% | 431 | 10.41% | 172 | **39.91%** | **33.79%** | 3.25x | 0.1162 | Robust ($N \ge 30$) |
+| | **Services** | 3,348 | 8.90% | 162 | 4.84% | 73 | **45.06%** | **24.50%** | 5.06x | 0.0912 | Robust ($N \ge 30$) |
+| | **Retired** | 1,812 | 22.96% | 760 | 41.94% | 325 | **42.76%** | **78.13%** | 1.86x | 0.2253 | Robust ($N \ge 30$) |
+| | **Student** | 758 | 28.89% | 472 | 62.27% | 185 | **39.19%** | **84.47%** | 1.36x | 0.2781 | Robust ($N \ge 30$) |
+| | **Self-employed** | 1,243 | 11.42% | 153 | 12.31% | 57 | **37.25%** | **40.14%** | 3.26x | 0.1213 | Robust ($N \ge 30$) |
+| | **Unemployed** | 1,024 | 15.43% | 148 | 14.45% | 67 | **45.27%** | **42.41%** | 2.93x | 0.1459 | Robust ($N \ge 30$) |
+| | **Entrepreneur** | 1,186 | 8.52% | 58 | 4.89% | 23 | **39.66%** | **22.77%** | 4.66x | 0.0932 | Robust ($N \ge 30$) |
+| | **Housemaid** | 1,013 | 8.39% | 94 | 9.28% | 29 | **30.85%** | **34.12%** | 3.68x | 0.1022 | Robust ($N \ge 30$) |
+| **Education Tier** | **Tertiary Education** | 10,594 | 14.89% | 1,592 | 15.03% | 658 | **41.33%** | **41.72%** | 2.78x | 0.1437 | Robust ($N \ge 30$) |
+| | **Secondary Education** | 18,561 | 10.67% | 1,696 | 9.14% | 713 | **42.04%** | **35.99%** | 3.94x | 0.1070 | Robust ($N \ge 30$) |
+| | **Primary Education** | 5,531 | 8.62% | 448 | 8.10% | 183 | **40.85%** | **38.36%** | 4.74x | 0.0927 | Robust ($N \ge 30$) |
+| | **Unknown Education** | 1,482 | 13.23% | 264 | 17.81% | 102 | **38.64%** | **52.04%** | 2.92x | 0.1390 | Robust ($N \ge 30$) |
+| **Marital Status** | **Married** | 21,771 | 10.04% | 1,766 | 8.11% | 798 | **45.19%** | **36.52%** | 4.50x | 0.1019 | Robust ($N \ge 30$) |
+| | **Single** | 10,227 | 15.01% | 1,826 | 17.85% | 680 | **37.24%** | **44.30%** | 2.48x | 0.1470 | Robust ($N \ge 30$) |
+| | **Divorced** | 4,170 | 12.25% | 408 | 9.78% | 178 | **43.63%** | **34.83%** | 3.56x | 0.1165 | Robust ($N \ge 30$) |
 
 ---
 
 ## 6. Forensic Error Analysis: False Positives vs. Missed Positives
 
-Understanding the specific traits of misranked prospects is essential for diagnosing the boundaries of pre-call predictive capability.
+### Compliant Error Cohort Profile Matrix
 
-### Error Cohort Comparison Matrix
-
-| Customer Attribute | Top-k True Positives ($TP = 1,908$) | Top-k False Positives ($FP = 2,092$) | Missed Positives ($FN = 2,323$) | Correctly Rejected ($TN = 29,845$) |
+| Customer Pre-Campaign Attribute | Top-k True Positives ($TP = 1,656$) | Top-k False Positives ($FP = 2,344$) | Missed Positives ($FN = 2,575$) | Correctly Rejected ($TN = 29,593$) |
 | :--- | :---: | :---: | :---: | :---: |
-| **Mean Predicted Score** | **0.47** | **0.38** | **0.11** | **0.08** |
-| **Mean Age** | 44.2 years | 44.5 years | 39.5 years | 40.5 years |
-| **Median Balance** | **€1,026** | **€1,100** | **€560** | **€391** |
-| **Previously Contacted (`pdays != -1`)** | **59.70%** | **50.86%** | **15.71%** | **13.46%** |
-| **Prior Campaign Success (`poutcome`)** | **40.83%** | **20.27%** | **0.00%** | **0.01%** |
-| **Debt-Free (No Housing, No Loan)** | **80.19%** | **79.45%** | **41.76%** | **31.97%** |
-| **Holding Housing Loan** | **17.66%** | **18.16%** | **52.48%** | **61.14%** |
-| **Cellular Contact Channel** | **89.20%** | **85.95%** | **76.58%** | **60.93%** |
-| **Mean Campaign Contacts** | 1.77 | 1.87 | 2.27 | 2.87 |
+| **Mean Predicted Score** | **0.483** | **0.350** | **0.097** | **0.080** |
+| **Median Predicted Score** | **0.440** | **0.293** | **0.088** | **0.071** |
+| **Mean Age** | 44.20 years | 42.59 years | 39.95 years | 40.66 years |
+| **Median Age** | 39.0 years | 36.0 years | 38.0 years | 39.0 years |
+| **Mean Balance** | **€2,301.87** | **€2,340.08** | **€1,525.52** | **€1,221.98** |
+| **Median Balance** | **€1,036.0** | **€1,101.5** | **€603.0** | **€387.0** |
+| **Previously Contacted (`pdays != -1`)** | **70.35%** | **55.08%** | **13.17%** | **12.80%** |
+| **Never Contacted (`pdays == -1`)** | **29.65%** | **44.92%** | **86.83%** | **87.20%** |
+| **Prior Campaign Success (`poutcome`)** | **47.04%** | **18.05%** | **0.00%** | **0.01%** |
+| **Debt-Free (No Housing, No Loan)** | **82.25%** | **82.98%** | **44.19%** | **31.28%** |
+| **Holding Housing Loan** | **16.06%** | **14.29%** | **50.10%** | **61.81%** |
+| **Holding Personal Loan** | **2.84%** | **4.48%** | **13.55%** | **17.95%** |
+| **Negative Balance Flag (< €0)** | **0.54%** | **1.32%** | **5.90%** | **9.49%** |
+| **Top 3 Occupations** | Management (25.1%), Retired (19.8%), Tech (12.2%) | Management (22.8%), Retired (18.8%), Tech (12.8%) | Management (24.5%), Blue-collar (18.5%), Tech (18.1%) | Blue-collar (24.2%), Management (20.2%), Tech (17.4%) |
+| **Education: Secondary / Tertiary** | 45.9% / 42.3% | 45.1% / 42.8% | 51.1% / 37.0% | 54.8% / 28.4% |
+| **Marital: Married / Single** | 48.2% / 41.1% | 41.3% / 48.9% | 53.9% / 33.2% | 62.9% / 25.5% |
 
-### Profile of Top-k False Positives ($FP = 2,092$)
-- **High Demographic & Financial Convergence**: Top-k False Positives share almost identical observable profiles with True Positives: mean age (44.5 vs 44.2 years), debt-free proportion (79.5% vs 80.2%), and cellular contact (86.0% vs 89.2%). In fact, False Positives have a slightly *higher* median balance (€1,100 vs €1,026).
-- **Prior Success Attrition**: Over **20.27% of False Positives (424 prospects)** were prior campaign successes (`poutcome == 'success'`). While ~65% of prior winners re-subscribe, ~35% decline.
-- **Analytical Takeaway**: Top-k True Positives and False Positives are **difficult to distinguish using the observed pre-call features**. Possible explanations for why these highly ranked prospects did not convert include unobserved customer variables (e.g. current cash needs, life events, competing deposit yields), omitted predictors, data limitations, model limitations, temporal macro effects, and stochastic customer decision-making. The available data do not establish which explanation is responsible.
+### False-Positive Findings ($FP = 2,344$)
+1. **High Demographic and Financial Overlap**:
+   - False Positives and True Positives are remarkably similar across observable pre-campaign financial and demographic attributes.
+   - Median balance is actually higher for False Positives (**€1,101.50** vs **€1,036.00** for True Positives).
+   - Debt-free proportion is essentially identical (**82.98%** for FP vs **82.25%** for TP).
+   - Housing loan presence is equally low (**14.29%** for FP vs **16.06%** for TP), and negative balances are rare in both (**1.32%** vs **0.54%**).
+   - Both cohorts are dominated by management professionals, retirees, and technicians with secondary or tertiary education.
+2. **Prior Interaction Discrepancy**:
+   - The primary observable divergence is in prior campaign interaction history: True Positives have a higher prevalence of prior success (**47.04%** vs **18.05%** in FP) and prior contacts (**70.35%** vs **55.08%** in FP).
+   - However, 423 False Positives were prior campaign successes who did not re-subscribe.
+3. **Objective Analytical Takeaway**:
+   - The observed pre-campaign features do not distinguish why these qualified, liquid, debt-free prospects declined to subscribe.
+   - We make no causal claims or speculative assertions regarding unobserved conversational or situational factors. We document only that under the available pre-campaign feature contract, False Positives represent commercially qualified leads exhibiting strong financial capacity.
 
-### Profile of Missed Positives ($FN = 2,323$)
-- **Overwhelmingly First-Time Contacts**: Over **84.29% of Missed Positives (1,958 out of 2,323)** have never been contacted previously (`pdays == -1`).
-- **Absence of Historical Signals**: Not a single Missed Positive had a prior success ($0.00\%$).
-- **Subscribing Despite Liabilities**: Over **52.48% of Missed Positives hold housing loans**, and only 41.76% are debt-free. Their median balance is €560 (vs €1,026 for TP).
-- **Analytical Takeaway**: **The current feature set and frozen Random Forest provide limited separation for many first-time converters.** Missed Positives are customers who subscribe despite holding personal debt and having zero past relationship with the bank. In observed pre-call features, their profile appears similar to the general non-subscribing population (mean score 0.11 vs 0.08 for TN).
-
-### Ranking Ambiguity Around the Capacity Cutoff
-To examine ranking behavior near the decision boundary, the **50 lowest-scoring True Positives** (ranks 3,950–3,999, score $\approx 0.239$) were compared against the **50 highest-scoring Missed Positives** (ranks 4,000–4,049, score $\approx 0.237$):
-
-| Attribute | 50 Lowest-Scoring Captured Positives (Ranks 3,950–3,999) | 50 Highest-Scoring Missed Positives (Ranks 4,000–4,049) |
-| :--- | :---: | :---: |
-| **Mean Score** | **0.2392** | **0.2368** |
-| **Mean Age** | 41.3 years | 38.8 years |
-| **Median Balance** | **€1,012** | **€1,113** |
-| **Previously Contacted (`pdays != -1`)** | 32.0% | 46.0% |
-| **Prior Success** | 2.0% | 0.0% |
-| **Debt-Free Proportion** | **88.0%** | **78.0%** |
-
-- **Analytical Takeaway**: The score difference between being ranked just inside versus just outside the cutoff is less than **0.003**. Prospects on either side have nearly indistinguishable balances and contact histories; differences in debt status, contact month, or age **contribute to differences in the model's ranking score**, placing one prospect at rank 3,990 and another at rank 4,010.
+### Missed-Positive Findings ($FN = 2,575$) & Cold-Start Impact
+1. **Severe First-Time Outreach Cold-Start Problem**:
+   - **86.83% of all Missed Positives (2,236 out of 2,575) have never been contacted previously (`pdays == -1`)**.
+   - In contrast, only **29.65%** of captured True Positives were first-time contacts.
+   - Removing current-campaign variables (`month`, `contact`, `campaign`) directly exacerbates this cold-start dynamic: without in-campaign execution signals, first-time prospects have fewer distinguishing variables.
+2. **Zero Prior Success History**:
+   - Exactly **0.00%** of Missed Positives had prior campaign success (`poutcome == 'success'`).
+3. **Subscribing Under Financial Liability**:
+   - While True Positives are 82.25% debt-free, **over half of Missed Positives hold a housing loan (50.10%)**, and **13.55% hold a personal loan** (vs 2.84% in TP). Only 44.19% are debt-free.
+   - Median balance is **€603.00** (vs €1,036.00 for TP), and 5.90% have negative balances.
+4. **Severe Score Suppression**:
+   - Because they lack prior contact history and carry loans, Missed Positives receive low model scores (mean **0.097**, median **0.088**), placing them well below the pooled OOF diagnostic capacity cutoff of 0.2007.
+5. **Analytical Takeaway**:
+   > [!NOTE]
+   > **The current compliant feature set and frozen Random Forest provide limited separation for first-time converters who carry debt burdens and lack previous campaign interaction records.** In the observed pre-campaign feature space, their profiles appear demographically and financially similar to the broader non-subscribing population (mean score 0.097 vs 0.080 for TN).
 
 ---
 
-## 7. Model Interpretation: Permutation vs. Impurity Importance
+## 7. Model Interpretation: Permutation Feature Importance
 
 ![Permutation Feature Importance](figures/07_permutation_importance.png)
-*Figure 4: Permutation feature importance of raw pre-call input features, evaluated strictly on held-out validation folds using Average Precision (PR-AUC) drop. Error bars reflect $\pm 1$ standard deviation across the 5 cross-validation folds.*
+*Figure 4: Permutation feature importance of canonical raw pre-campaign features, evaluated on held-out validation folds across 5 cross-validation splits using PR-AUC (Average Precision) decrease. Error bars represent $\pm 1$ standard deviation.*
 
-### Raw Feature Permutation Importance on Held-Out Folds
+### Compliant Raw Feature Permutation Importance on Held-Out Folds
 
-Permutation importance measures predictive reliance by shuffling each raw pre-call feature on unseen validation folds and recording the resulting decrease in Average Precision (PR-AUC):
+Permutation importance was evaluated strictly on held-out validation folds to quantify genuine generalization loss when each raw pre-campaign feature is shuffled:
 
-| Rank | Raw Pre-Call Feature | Mean PR-AUC Decrease | Fold Std Dev ($\sigma$) | Min PR-AUC Decrease | Max PR-AUC Decrease | Conceptual Description |
+| Rank | Raw Pre-Campaign Feature | Mean PR-AUC Decrease | Fold Std Dev ($\sigma$) | Min PR-AUC Decrease | Max PR-AUC Decrease | Pre-Campaign Domain Role |
 | :---: | :--- | :---: | :---: | :---: | :---: | :--- |
-| **1** | **`poutcome`** | **0.1104** | 0.0109 | 0.0985 | 0.1238 | Prior campaign outcome (success, failure, other). |
-| **2** | **`month`** | **0.0929** | 0.0071 | 0.0837 | 0.1025 | Outreach calendar seasonality & cohort timing. |
-| **3** | **`contact`** | **0.0498** | 0.0057 | 0.0434 | 0.0565 | Contact communication channel (cellular vs unknown). |
-| **4** | **`pdays`** | **0.0466** | 0.0067 | 0.0391 | 0.0532 | Recency of last contact from prior campaign. |
-| **5** | **`housing`** | **0.0277** | 0.0029 | 0.0245 | 0.0305 | Presence of housing mortgage liability. |
-| **6** | **`age`** | **0.0172** | 0.0015 | 0.0158 | 0.0197 | Client age (demographic life-stage signal). |
-| **7** | **`day_of_week`** *(day of month)* | **0.0147** | 0.0018 | 0.0116 | 0.0159 | Day of month (payroll/liquidity timing). |
-| **8** | **`balance`** | **0.0062** | 0.0022 | 0.0045 | 0.0097 | Yearly average balance in euros. |
-| **9** | **`campaign`** | **0.0048** | 0.0019 | 0.0024 | 0.0077 | Contacts performed during current campaign. |
-| **10** | **`marital`** | **0.0038** | 0.0018 | 0.0011 | 0.0059 | Marital status (single, married, divorced). |
-| **11** | **`previous`** | **0.0033** | 0.0016 | 0.0012 | 0.0055 | Total historical contacts before current campaign. |
-| **12** | **`job`** | **0.0032** | 0.0028 | -0.0006 | 0.0061 | Client occupation category. |
-| **13** | **`loan`** | **0.0025** | 0.0010 | 0.0012 | 0.0040 | Presence of personal loan liability. |
-| **14** | **`default`** | **0.0001** | 0.0003 | -0.0004 | 0.0004 | Credit in default history. |
-| **15** | **`education`** | **0.0001** | 0.0018 | -0.0019 | 0.0017 | Level of education. |
+| **1** | **`poutcome`** | **0.1086** | 0.0123 | 0.0956 | 0.1238 | Prior campaign outcome (success, failure, other). |
+| **2** | **`pdays`** | **0.0483** | 0.0051 | 0.0422 | 0.0557 | Days elapsed since last contact from prior campaign. |
+| **3** | **`housing`** | **0.0399** | 0.0044 | 0.0330 | 0.0431 | Presence of housing mortgage liability. |
+| **4** | **`age`** | **0.0375** | 0.0053 | 0.0300 | 0.0415 | Client age (demographic lifecycle stage). |
+| **5** | **`balance`** | **0.0136** | 0.0066 | 0.0057 | 0.0219 | Average yearly balance in euros. |
+| **6** | **`job`** | **0.0089** | 0.0034 | 0.0045 | 0.0123 | Client occupation category. |
+| **7** | **`marital`** | **0.0080** | 0.0037 | 0.0047 | 0.0137 | Marital status (single, married, divorced). |
+| **8** | **`loan`** | **0.0056** | 0.0007 | 0.0046 | 0.0066 | Presence of personal loan liability. |
+| **9** | **`education`** | **0.0032** | 0.0023 | 0.0009 | 0.0069 | Highest educational tier attained. |
+| **10** | **`previous`** | **0.0026** | 0.0031 | -0.0014 | 0.0065 | Number of historical contacts prior to campaign. |
+| **11** | **`default`** | **0.0001** | 0.0006 | -0.0007 | 0.0008 | Credit in default flag. |
 
-### Secondary Diagnostic: Built-In Impurity Importance
-For comparison, the Random Forest's internal Gini impurity importances for engineered features are summarized below:
-- `num__prior_success`: **0.1055**
-- `cat__poutcome_success`: **0.0881**
-- `num__age`: **0.0828**
-- `num__pdays_recency`: **0.0588**
-- `num__balance_log`: **0.0572**
-- `num__balance`: **0.0567**
-- `num__contact_day_of_month`: **0.0566**
-- `num__pdays`: **0.0479**
+### Comparison with Old Historical Non-Compliant Importance Ranking
 
-> [!WARNING]
-> **Impurity Importance Cardinality Bias**: Impurity-based feature importance is known to systematically overstate the importance of continuous, high-cardinality features (e.g. `age`, `balance`, and `contact_day_of_month`) because continuous features provide many distinct split points to reduce node impurity. In contrast, **permutation importance on held-out validation folds** evaluates true post-fit generalizability, showing that `month` and `contact` are substantially more predictive than `balance` or `age`.
+In the historical non-compliant model, four execution variables distorted the feature hierarchy:
+- `month`: Formerly Rank 2 (mean PR-AUC decrease: **0.0929**)
+- `contact`: Formerly Rank 3 (mean PR-AUC decrease: **0.0498**)
+- `day_of_week` (`contact_day_of_month`): Formerly Rank 7 (mean PR-AUC decrease: **0.0147**)
+- `campaign`: Formerly Rank 9 (mean PR-AUC decrease: **0.0048**)
+
+**What variables replace those signals once only legitimate pre-campaign information remains?**
+1. **`poutcome` (0.1086)** and **`pdays` (0.0483)** remain the primary predictors of term deposit subscription.
+2. In the absence of seasonal and dialing channel shortcuts, **`housing` mortgage debt** rises from rank 5 to **Rank 3** (importance increased from 0.0277 to **0.0399**, a **+44.0% increase in relative reliance**).
+3. **`age`** rises from rank 6 to **Rank 4** (importance increased from 0.0172 to **0.0375**, a **+118% increase in relative reliance**).
+4. **`balance`** rises from rank 8 to **Rank 5** (importance increased from 0.0062 to **0.0136**, a **+119% increase in relative reliance**).
+
+> [!NOTE]
+> **Non-Causal Interpretation**: Feature importance reflects predictive reliance in reducing validation PR-AUC loss, not causal impact. Shuffling `housing` damages model ranking because housing debt strongly correlates with household liquidity constraints, not because taking out a mortgage causes a customer to decline a savings deposit. Furthermore, importance magnitudes are conditional on the fitted model and feature set. Removing correlated/current-campaign variables can redistribute permutation importance across remaining features, so percentage changes are descriptive rather than intrinsic increases in feature importance.
 
 ---
 
 ## 8. Random Forest vs. Business-Rule Baseline Selection Overlap
 
 ![RF vs Business Rule Overlap](figures/09_rf_vs_business_rule_overlap.png)
-*Figure 5: Overlap in lead selections (left) and conversion yield (right) between Random Forest and the frozen Business-Rule heuristic within the identical top $k=4,000$ capacity.*
+*Figure 5: Set overlap in lead selections (left) and conversion yield (right) between Random Forest and the frozen Business-Rule heuristic within the identical top $k=4,000$ capacity.*
 
-Using the identical development OOF population and identical capacity constraint ($k_{\text{oof}} = 4{,}000$):
+Evaluated on the identical 80% development partition ($N=36,168$) under the identical capacity constraint ($k_{\text{oof}} = 4,000$):
 
 | Selection Cohort | Number of Leads | % of Top-k | Conversions Captured | Precision within Cohort |
 | :--- | :---: | :---: | :---: | :---: |
-| **Shared Selections (Both RF & Rule)** | **2,114** | 52.85% | **1,113** | **52.65%** |
-| **Unique to Random Forest (ML Discoveries)** | **1,886** | 47.15% | **795** | **42.15%** |
-| **Unique to Business Rule (Heuristic Only)** | **1,886** | 47.15% | **208** | **11.03%** |
-| **Overall Random Forest ($k=4,000$)** | **4,000** | 100.00% | **1,908** | **47.70%** |
-| **Overall Business Rule ($k=4,000$)** | **4,000** | 100.00% | **1,321** | **33.03%** |
-| **Jaccard Similarity Index** | **0.3592** | — | — | — |
-| **Net Conversion Advantage for RF** | **+587 conversions (+44.4%)** | — | — | — |
+| **Shared Selections (Both RF & Rule)** | **2,359** | 58.98% | **1,146** | **48.58%** |
+| **Unique to Random Forest (ML Discoveries)** | **1,641** | 41.02% | **510** | **31.08%** |
+| **Unique to Business Rule (Heuristic Only)** | **1,641** | 41.02% | **175** | **10.66%** |
+| **Overall Random Forest ($k=4,000$)** | **4,000** | 100.00% | **1,656** | **41.40%** |
+| **Overall Business Rule Baseline ($k=4,000$)** | **4,000** | 100.00% | **1,321** | **33.025%** |
+| **Jaccard Similarity Index** | **0.418** | — | — | — |
+| **RF Net Conversion Advantage** | **+335 conversions (+25.36% gain)** | — | — | — |
 
-### What Prospects Is Random Forest Finding that the Heuristic Misses?
-1. **The Flaw of the Heuristic Rule**:
-   - The business-rule heuristic prioritizes prior successes (+1,000 pts) and prior contacts without personal loans (+500 pts).
-   - Once all 1,222 prior successes and 5,394 prior contacts are evaluated, the rule exhausts its high-confidence tiers. To reach 4,000 leads, it fills the remaining quota with repeat-contact clients who have personal loans or high balances in low-conversion months (e.g., May and November). These 1,886 rule-only selections convert at an abysmal **11.03%** (below the random baseline).
-2. **The Discoveries of Random Forest**:
-   - Random Forest recognizes that **first-time prospects (`pdays == -1`) can be highly profitable** if they possess the right demographic and contextual features.
-   - **95.28% of RF's unique discoveries had never been contacted previously** (`pdays == -1`).
-   - RF selects high-propensity first-time leads:
-     - **Retirees and seniors (age 60+)**: Mean age in RF-unique leads is 45.6 years (with 24.1% retired), compared to 40.6 years for rule-unique leads.
-     - **Debt-free liquid households**: 84.0% of RF-unique leads are completely debt-free.
-     - **Favorable calendar windows**: 54.2% of RF-unique leads were contacted in April, June, and October.
-   - Result: RF's 1,886 unique selections convert at **42.15%** (capturing **795 subscriptions** vs only 208 for the heuristic), delivering a net gain of **+587 conversions** on the development set.
+### Qualitative Analysis of RF Discoveries vs. Rule Over-Commitment
+1. **The Heuristic's Structural Limitation**:
+   - The business rule strictly prioritizes prior successes (+1,000 pts) and prior contacts without personal loans (+500 pts).
+   - Once high-propensity repeat contacts are exhausted, the heuristic fills its remaining quota with repeat contacts who hold mortgages or personal loans.
+   - As a result, the **1,641 leads selected only by the business rule convert at only 10.66%** (below the 11.70% random dialing baseline).
+2. **What Random Forest Discovers**:
+   - Random Forest breaks free of the repeat-contact bias: **94.09% of RF-unique selections had never been contacted previously (`pdays == -1`)**.
+   - RF discovers liquid, debt-free demographic segments among higher-conversion first-time prospects:
+     - **Retirees and students**: 28.26% retired and 17.80% students (combined 46.06%), with a mean age of 43.34 years (vs 40.27 years for rule-unique leads).
+     - **High debt-free proportion**: **88.79%** of RF-unique selections are completely debt-free (vs only **25.29%** for rule-unique selections).
+   - Consequently, RF's 1,641 unique selections convert at **31.08%** (capturing **510 conversions** vs 175 for the rule), delivering a net gain of **+335 term deposit subscriptions**.
 
 ---
 
-## 9. Key Analytical Findings & Business Takeaways
+## 9. Quantifying Remediation Impact (Old Non-Compliant vs. Corrected Diagnostics)
 
-1. **Prior Success is the Most Influential Pre-Call Predictor**:
-   - `poutcome` exhibits the largest permutation PR-AUC decrease (0.1104). The model captures **98.7% of all available prior successes** in top-k.
-2. **Calendar Month and Communication Channel Associations**:
-   - `month` exhibits the second-highest permutation importance (PR-AUC drop: 0.0929), followed by `contact` channel (0.0498).
-   - Prospects contacted in March, September, October, and December show observed conversion rates above 43%, whereas May accounts for 30.6% of calls but only a 6.7% conversion rate.
+> [!CAUTION]
+> **Historical Comparison Disclaimer**:
+> All results labeled **"NON-COMPLIANT HISTORICAL DIAGNOSTICS"** reflect models and diagnostics that included current-campaign execution variables (`month`, `contact`, `campaign`, `day`). They are obsolete and invalid for production planning.
+
+### Diagnostic Comparison Table
+
+| Metric | Non-Compliant Historical Diagnostics | Corrected Compliant Diagnostics | Absolute Difference | Relative Change | Primary Methodological Cause |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **OOF Conversions@4000** | **1,908** | **1,656** | **-252** | **-13.21%** | Removal of execution variables (`month`, `contact`, `campaign`, `day`). |
+| **Precision@capacity** | **47.70%** | **41.40%** | **-6.30%** | **-13.21%** | True pre-campaign prospect ranking without operational leakage. |
+| **Recall@capacity** | **45.10%** | **39.14%** | **-5.96%** | **-13.21%** | Fewer conversions captured within fixed 4,000 call capacity. |
+| **Lift@capacity** | **4.08x** | **3.54x** | **-0.54x** | **-13.24%** | Baseline development prevalence is 11.70%. |
+| **PR-AUC (Average Precision)** | **0.4395** | **0.3758** | **-0.0637** | **-14.49%** | Elimination of strong seasonal and channel separation. |
+| **ROC-AUC** | **0.7924** | **0.7339** | **-0.0585** | **-7.38%** | True pre-campaign discrimination power. |
+| **First-Time Contact Recall** | **27.29%** | **18.01%** | **-9.28%** | **-34.01%** | First-time leads (`pdays == -1`) lose campaign timing signals. |
+| **Prior-Contact Recall** | **76.62%** | **77.46%** | **+0.84%** | **+1.10%** | Repeat contact conversion capture remains highly stable. |
+| **RF vs. Rule Net Advantage** | **+587 conversions** | **+335 conversions** | **-252** | **-42.93%** | RF advantage remains decisive (+25.36% over compliant rule). |
+
+### Analytical Explanation of Differences
+- **Legitimate Degradation**: The reduction in Conversions@4000 (from 1,908 to 1,656) is **not a modeling defect**. It represents the elimination of artificial predictability from variables that cannot exist when selecting prospects ahead of campaign launch.
+- **First-Time Prospect Penalty**: The loss in recall is heavily concentrated in first-time contacts (`pdays == -1`), where recall dropped from 27.29% to 18.01%. When `month` and `contact` are unavailable, the model must rely solely on age, balance, debt, and job.
+- **Repeat-Contact Invariance**: Recall for previously contacted prospects remained virtually unchanged (76.62% vs 77.46%), proving that the model's core mechanism for prioritizing repeat relationships is robust and genuine.
+
+---
+
+## 10. Summary of Analytical Findings & Key Business Insights
+
+1. **Prior Campaign Success is the Anchor Signal**:
+   - `poutcome == 'success'` remains the single most powerful pre-campaign signal, driving a 0.1086 drop in PR-AUC. The model captures **100.0% of available prior successes** within the top 4,000 capacity.
+2. **Financial Liabilities Suppress Conversion Propensity**:
+   - Holding a housing loan (`housing == 'yes'`) or personal loan (`loan == 'yes'`) severely reduces conversion probability. Debt-free clients convert at 41.19% within top-k, whereas clients with dual loan burdens convert at only 31.67%.
 3. **The First-Time Contact Blindspot**:
-   - While the model captures 76.6% of converters who had prior campaign interactions, it captures only **27.3% of first-time converters** (738 out of 2,704).
-   - **84.3% of all Missed Positives are first-time contacts**.
-   - The current feature set and frozen Random Forest provide limited separation for many first-time converters, as they lack prior campaign history and their observable pre-call attributes closely resemble the broader non-subscribing population.
-4. **False Positives are Qualified Prospects**:
-   - False Positives share similar observable financial and demographic profiles with True Positives (80% debt-free, median balance €1,100, 51% prior contact).
-   - True Positive and False Positive prospects are difficult to distinguish using the observed pre-call features. Possible explanations include unobserved variables, omitted predictors, data limitations, model limitations, temporal effects, and stochastic customer behavior; the available data do not establish which explanation is responsible.
-5. **Substantial Conversion Gain Over Domain Heuristics**:
-   - Random Forest captures **+587 additional subscriptions (+44.4% more)** than the business-rule baseline on the development partition by successfully discovering first-time liquid retirees in favorable seasons rather than blindly recycling past contacts.
+   - **86.83% of Missed Positives are first-time contacts (`pdays == -1`)**.
+   - The current compliant feature set and frozen Random Forest provide limited separation for first-time converters who carry debt burdens.
+4. **False Positives are Financially Qualified Prospects**:
+   - False Positives share high balances (€1,101.50 median), high debt-free rates (82.98%), and similar occupational distributions with True Positives. They represent commercial prospects who declined rather than disqualified leads.
+5. **Decisive Advantage Over Business Heuristics**:
+   - Random Forest captures **+335 additional subscriptions (+25.36% gain)** over the compliant domain baseline ($k=4,000$) by identifying liquid retirees and students rather than recycling indebted past contacts.
 
 ---
 
-## 10. Methodological Limitations
+## 11. Remaining Methodological Limitations
 
-1. **Stationarity of Historical Relationship**: The model relies heavily on `poutcome` and `pdays`. If future campaigns target purely cold prospect lists where prior contact history is 0%, model precision will decline toward the first-time cohort baseline (~40.5%).
-2. **Uncalibrated Continuous Scores**: Predicted scores reflect probability ordering but are not calibrated probabilities. They cannot be used directly in financial expected-value calculations ($E[\text{profit}] = p \cdot V - C$) without Platt scaling or isotonic regression.
-3. **Absence of Post-Call Information**: While excluding `duration` is strictly necessary to prevent target leakage, observed pre-call features capture only a fraction of conversion variance. Actual customer conversion decisions may depend on conversational dynamics, individual financial circumstances, or external events that are unobservable prior to outreach.
-
----
-
-## 11. What This Analysis Does NOT Establish
-
-1. **Not Causal Claims**: Feature importance and subgroup associations identify predictive correlation, not causation. We do not claim that calling in March *causes* higher conversions or that holding a loan *causes* a client to decline.
-2. **Not Production Ready**: The model has not yet undergone probability calibration, operational deployment testing, or integration with CRM workflow systems.
-3. **Not Independent Test Performance**: These metrics are development-partition OOF diagnostics. The unweighted Random Forest configuration does not currently have an independent untouched holdout test estimate; the previously recorded single test evaluation on the balanced configuration remains a frozen historical benchmark.
+1. **Information Ceiling on First-Time Contacts**: Without interaction history, first-time prospects exhibit limited feature variance in core banking records.
+2. **Uncalibrated Ranking Scores**: Scores reflect relative rank ordering, not calibrated probabilities. The scores should not be treated as reliable calibrated probabilities for expected-value decisions until calibration quality has been evaluated.
+3. **Absence of Real-Time Interaction Data**: Actual conversion depends partly on conversational interaction and real-time customer context that are unobservable at pre-campaign selection time.
+4. **Quarantined Holdout**: The held-out 20% test partition remains strictly quarantined; probability calibration represents the next analytical phase rather than establishing production deployment readiness.

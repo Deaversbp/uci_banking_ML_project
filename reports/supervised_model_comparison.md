@@ -1,197 +1,215 @@
-# Supervised Model Comparison & Validation Stability Report
+# Supervised Model Comparison & Validation Stability Report (Post-Remediation)
 
 **Project**: UCI Bank Marketing Term Deposit Outreach Optimization  
-**Phase**: Phase 3 Deliverable — Supervised Model Comparison  
-**Date**: September 2026  
-**Status**: Completed & Formally Frozen  
+**Phase**: Phase 3 Deliverable — Supervised Model Comparison (Remediated Under Canonical Feature Contract)  
+**Date**: September 2026 (Updated Post-Feature Availability Audit)  
+**Status**: Completed, Formally Remediated & Frozen  
 
 ---
 
-## 1. Executive Summary & Objective
+## 1. Executive Summary & Correction History
 
-The primary objective of this phase is to determine whether **Random Forest's** validation advantage over **Logistic Regression** is sufficiently stable, robust, and economically meaningful to justify its additional model complexity under a fixed-capacity sales constraint (5,000 calls maximum).
+### Feature Contract Correction Background
+In the original Phase 3 execution, candidate supervised models inadvertently included several variables recorded during campaign execution (`contact`, `month`, `contact_day_of_month` / `day_of_week`, and `campaign`). A rigorous prediction-time feature availability audit (documented in `reports/prediction_time_feature_contract_audit.md`) established that:
+1. The operational decision is: *"Before outreach begins for a new campaign, rank an eligible prospect pool and choose which prospects should receive the limited outbound call capacity."*
+2. The exact prediction timestamp is: **IMMEDIATELY BEFORE any contact in the new/current campaign occurs.**
+3. At this timestamp, all current-campaign variables (`contact`, `month`, `contact_day_of_month`, `day_of_week`, `day`, `campaign`, and post-call `duration`) are completely non-existent and represent operational execution leakage.
+4. **Correction History**: The feature contract was formally corrected. All candidate models were recomputed strictly on development data using only legitimate pre-campaign variables. **All prior numerical results are formally labeled as NON-COMPLIANT HISTORICAL RESULTS and should not be treated as valid deployment estimates.**
 
-### Core Methodological Guardrails
-- **Restricted Candidate Set**: Officially limited strictly to **Logistic Regression** and **Random Forest** (no new model families such as XGBoost, CatBoost, or Neural Networks).
-- **Frozen Test Set Contract**: The held-out test set was not revisited during this comparison phase; its previously recorded single evaluation remains frozen. Zero test records or test labels were accessed, evaluated, or snooped during this comparison.
-- **Development-Only Partition**: All repeated validation, class-weight sensitivity, and model-selection decisions were performed exclusively on the 80% development partition (36,168 records).
-- **Leakage Contract**: Post-call `duration` was strictly quarantined and stripped from all preprocessing and model inputs.
-- **Decision Hierarchy**: Primary decision metric is **Conversions@capacity** (and Precision@capacity). Secondary diagnostics are stability, Precision/Recall/Lift, PR-AUC, and ROC-AUC, followed by operational and complexity considerations.
+### Core Objective of This Phase
+Determine whether **Random Forest's** validation advantage over **Logistic Regression** remains stable, robust, and economically meaningful when evaluated strictly under the canonical pre-campaign feature contract under a fixed-capacity sales constraint (5,000 calls maximum).
+
+### Methodological Guardrails
+- **Restricted Candidate Set**: Officially limited strictly to **Logistic Regression** and **Random Forest** (no new model families).
+- **Holdout Test Set Status & Protocol Correction**: The holdout was not used for supervised candidate fitting or model selection during the remediation pass. However, its labels were inadvertently included in a full-population business-rule reference calculation. No supervised model was rescored on the holdout. The holdout partition ($N=9,043$) remains quarantined and must not be accessed again. Furthermore, this must be distinguished from the earlier historical balanced-RF holdout evaluation, which remains an old historical artifact and is not a valid independent test estimate for the current compliant unweighted RF.
+- **Development-Only Partition**: All repeated cross-validation, candidate comparisons, and business-rule baseline references are evaluated strictly on the 80% development partition ($N=36,168$).
+- **Decision Hierarchy**: Primary decision metric is **Conversions@capacity**. Secondary diagnostics are ranking stability, Precision/Recall/Lift, PR-AUC, and ROC-AUC, followed by operational and complexity considerations.
 
 ---
 
-## 2. Candidate Models & Hyperparameter Specifications
+## 2. Candidate Models & Canonical Pre-Campaign Pipeline
 
-The official candidate set consists of two baseline architectures wrapped in the leak-free `create_pre_call_pipeline`:
+The candidate models are wrapped in the leak-free `create_pre_call_pipeline`, which strictly enforces `select_canonical_pre_campaign_features`:
 
 | Model Architecture | Base Estimator | Preprocessing & Feature Engineering | Key Hyperparameters |
 | :--- | :--- | :--- | :--- |
-| **Logistic Regression** | `sklearn.linear_model.LogisticRegression` | PreCallFeatureEngineer -> ColumnTransformer (Median Imputer + StandardScaler for numeric; Constant 'unknown' + OneHotEncoder for categorical) | `max_iter=1000`, `random_state=42`, `class_weight='balanced'` / `None` |
-| **Random Forest** | `sklearn.ensemble.RandomForestClassifier` | PreCallFeatureEngineer -> ColumnTransformer (Same leak-free pipeline) | `n_estimators=100`, `max_depth=12`, `n_jobs=-1`, `random_state=42`, `class_weight='balanced'` / `None` |
+| **Logistic Regression** | `sklearn.linear_model.LogisticRegression` | `PreCallFeatureEngineer(enforce_contract=True)` -> `ColumnTransformer` (Median Imputer + StandardScaler for numeric; Constant 'unknown' + OneHotEncoder for categorical) | `max_iter=1000`, `random_state=42`, `class_weight='balanced'` / `None` |
+| **Random Forest** | `sklearn.ensemble.RandomForestClassifier` | `PreCallFeatureEngineer(enforce_contract=True)` -> `ColumnTransformer` (Same canonical pipeline) | `n_estimators=100`, `max_depth=12`, `n_jobs=-1`, `random_state=42`, `class_weight='balanced'` / `None` |
+
+### Features Permitted Under Canonical Contract
+- **Valid Raw Features (11)**: `age`, `job`, `marital`, `education`, `default`, `balance`, `housing`, `loan`, `pdays`, `previous`, `poutcome`.
+- **Approved Engineered Features (6)**: `was_previously_contacted`, `pdays_recency`, `prior_success`, `has_debt_burden`, `negative_balance_flag`, `balance_log`.
+- **Forbidden Variables (Purged)**: `duration`, `contact`, `month`, `contact_day_of_month`, `day_of_week`, `day`, `campaign`, `y`.
 
 ---
 
 ## 3. Validation Design & Capacity Derivation
 
-### Capacity Fraction Derivation
-The business operates under an operational quota of 5,000 outbound phone calls out of a total eligible population of 45,211 prospects:
+### Fixed Capacity Derivation
+Under the bank's operational budget of 5,000 calls out of 45,211 prospects:
 $$\text{capacity\_fraction} = \frac{5{,}000}{45{,}211} \approx 0.11059255 \quad (11.059\%)$$
 
-For any validation partition of size $N_{\text{val}}$, the proportional outreach capacity $k$ is calculated as:
+For any validation partition of size $N_{\text{val}}$, the proportional outreach capacity $k$ is:
 $$k_{\text{val}} = \text{round}(N_{\text{val}} \times \text{capacity\_fraction})$$
 
 ### Development-Only Partitioning
-1. **Outer Split**: The full dataset (45,211 records) was split into an **80% Development Partition** (36,168 records) and a **20% Holdout Test Partition** (9,043 records) using stratified sampling (`random_state=42`). The held-out test set was not revisited during this comparison phase; its previously recorded single evaluation remains frozen.
-2. **Repeated Cross-Validation**: On the 36,168-record development set, a **Repeated Stratified K-Fold** design was executed with:
+1. **Outer Split**: Stratified 80/20 split (`random_state=42`). 36,168 development records, 9,043 untouched holdout test records.
+2. **Repeated Cross-Validation**: On the development partition, **Repeated Stratified K-Fold** with:
    - **5 Folds** per repeat
    - **3 Repeats**
    - **15 Total Evaluation Splits**
    - Fixed `random_state=42`
-3. **Fold Capacity**: Each validation fold contains either 7,233 or 7,234 records:
+3. **Fold Capacity**: Each validation fold contains 7,233 or 7,234 records:
    $$k_{\text{val}} = \text{round}(7{,}233 \times 0.11059255) = 800 \quad \text{calls}$$
    $$k_{\text{val}} = \text{round}(7{,}234 \times 0.11059255) = 800 \quad \text{calls}$$
-   Each candidate model was evaluated by scoring and selecting the top $k = 800$ prospects on each fold's validation split.
 
 ---
 
-## 4. Class-Weight Sensitivity Analysis
+## 4. Class-Weight Sensitivity Analysis (Compliant Recomputation)
 
-To rigorously evaluate the effect of class-imbalance weighting without broad hyperparameter snooping, four controlled variants were evaluated across the identical 15 folds:
-1. `LogisticRegression (unweighted)`: `class_weight=None`
-2. `LogisticRegression (balanced)`: `class_weight='balanced'`
-3. `RandomForest (unweighted)`: `class_weight=None`
-4. `RandomForest (balanced)`: `class_weight='balanced'`
+Four controlled variants were evaluated across the identical 15 repeated-validation folds under the canonical feature contract:
 
 ### Paired Comparison: RandomForest (unweighted) vs. RandomForest (balanced)
-Across all 15 validation folds, the paired difference was calculated directly:
 $$\Delta_{\text{weight}} = \text{Conversions@}k(\text{RF unweighted}) - \text{Conversions@}k(\text{RF balanced})$$
 
-| Metric | Paired Weighting Result: RF (unweighted) minus RF (balanced) |
+| Metric | Corrected Paired Weighting Result: RF (unweighted) minus RF (balanced) |
 | :--- | :---: |
 | **Number of Folds ($N$)** | 15 |
-| **Mean $\Delta_{\text{weight}}$** | **+7.00 conversions** |
-| **Median $\Delta_{\text{weight}}$** | **+8.00 conversions** |
-| **Standard Deviation of $\Delta_{\text{weight}}$** | 9.43 |
-| **Minimum / Maximum $\Delta_{\text{weight}}$** | **-8.00 / +23.00 conversions** |
-| **Unweighted Wins** | **11 / 15 folds (73.3%)** |
+| **Mean $\Delta_{\text{weight}}$** | **+3.60 conversions** |
+| **Median $\Delta_{\text{weight}}$** | **+4.00 conversions** |
+| **Standard Deviation of $\Delta_{\text{weight}}$** | 7.61 |
+| **Minimum / Maximum $\Delta_{\text{weight}}$** | **-12.00 / +20.00 conversions** |
+| **Unweighted Wins** | **10 / 15 folds (66.7%)** |
 | **Balanced Wins** | **4 / 15 folds (26.7%)** |
-| **Ties** | **0 / 15 folds (0.0%)** |
-| **Fold Deltas ($\Delta$)** | `[-6, +10, +22, +9, +8, +23, +12, +1, -8, +14, -2, +1, +15, -1, +7]` |
+| **Ties** | **1 / 15 folds (6.7%)** |
 
-### Descriptive Comparison: Precision@capacity & PR-AUC
-- **Precision@capacity**:
-  - Unweighted RF: Mean **47.81%** (median: 47.75%, std: 1.54%, range: 45.62% - 50.50%).
-  - Balanced RF: Mean **46.93%** (median: 47.00%, std: 1.06%, range: 44.50% - 49.00%).
-  - Paired Delta: Mean **+0.88 percentage points** (median: +1.00%, std: 1.18%, min: -1.00%, max: +2.88%).
-  - Win Rate: Unweighted wins on precision in **11 of 15 folds (73.3%)**.
-- **PR-AUC**:
-  - Unweighted RF: Mean **0.4395** (median: 0.4386, std: 0.0167, range: 0.4158 - 0.4712).
-  - Balanced RF: Mean **0.4273** (median: 0.4218, std: 0.0164, range: 0.4034 - 0.4605).
-  - Paired Delta: Mean **+0.0122** (median: +0.0125, std: 0.0045, min: +0.0042, max: +0.0193).
-  - Win Rate: Unweighted wins on PR-AUC in **15 of 15 folds (100.0%)**.
+### Secondary Diagnostics: Precision@capacity, PR-AUC, and ROC-AUC
+- **Precision@capacity**: Mean paired delta is **+0.45 percentage points** (median: +0.50%, unweighted wins on 10/15 folds).
+- **PR-AUC**: Mean paired delta is **+0.0046** (median: +0.0038, unweighted wins on 13/15 folds).
+- **ROC-AUC**: Mean paired delta is **+0.0039** (median: +0.0035, unweighted wins on 13/15 folds).
 
-### Empirical Sensitivity Conclusions
-1. **Weighting Choice**: In accordance with the project's selection hierarchy (primary: Conversions@capacity; secondary: stability, Precision/Recall/Lift, PR-AUC, ROC-AUC), **`class_weight=None` (unweighted) is clearly supported by the development evidence**. It achieves higher average conversions (+7.00 conversions), higher precision (+0.88%), higher PR-AUC (+0.0122 across 100% of folds), and a 73.3% fold win rate on Conversions@capacity.
-2. **No Retention Merely for History**: `class_weight='balanced'` is **not** retained merely because it was previously configured. The empirical evidence across 15 development folds demonstrates that unweighted Random Forest yields superior lead-ranking performance.
-3. **Model Family Invariance**: In **both** balanced and unweighted settings, Random Forest strictly defeated Logistic Regression on 100% of folds (15/15). The superiority of Random Forest over Logistic Regression is completely invariant to the weighting choice.
+### Weighting Selection Conclusion
+In accordance with the project's selection hierarchy:
+1. **`class_weight=None` (unweighted) is empirically preferred**: It captures more conversions (+3.60 per fold), higher precision (+0.45%), higher PR-AUC, and wins on 66.7% of folds.
+2. Therefore, **`RandomForest(class_weight=None)` is retained as the preferred Random Forest candidate**.
 
 ---
 
-## 5. Aggregate Metric Comparison
+## 5. Aggregate Metric Comparison (Compliant Results)
 
-The table below summarizes performance across all 15 validation folds ($k = 800$ contacts per fold). Fold win rate is evaluated against the baseline reference `LogisticRegression (balanced)`.
+The table below summarizes performance across all 15 validation folds ($k = 800$ contacts per fold). Fold win rate is evaluated against the baseline reference `LogisticRegression (balanced)`:
 
-| Model / Configuration | Mean Conversions@capacity | Std Conversions@capacity | Mean Precision@capacity | Mean Recall@capacity | Mean Lift@capacity | Mean PR-AUC | Mean ROC-AUC | Fold Win Rate |
+| Model / Configuration | Mean Conversions@capacity | Std Conversions@capacity | Mean Precision@capacity | Mean Recall@capacity | Mean Lift@capacity | Mean PR-AUC | Mean ROC-AUC | Fold Win Rate vs Ref LR |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **LogisticRegression (balanced)** | 360.73 | 9.66 | 45.09% | 42.63% | 3.85x | 0.4014 | 0.7679 | Reference (-) |
-| **LogisticRegression (unweighted)** | 364.87 | 10.68 | 45.61% | 43.12% | 3.90x | 0.4050 | 0.7671 | 86.7% (13/15) |
-| **RandomForest (balanced)** | 375.47 | 8.48 | 46.93% | 44.37% | 4.01x | 0.4273 | 0.7886 | 100.0% (15/15) |
-| **RandomForest (unweighted)** | **382.47** | **12.33** | **47.81%** | **45.20%** | **4.09x** | **0.4395** | **0.7924** | **100.0% (15/15)** |
+| **LogisticRegression (unweighted)** | 300.93 | 7.59 | 37.62% | 35.56% | 3.22x | 0.3514 | 0.7191 | 33.3% (5/15) |
+| **LogisticRegression (balanced)** | 301.80 | 7.72 | 37.73% | 35.67% | 3.22x | 0.3493 | 0.7199 | Reference (-) |
+| **RandomForest (balanced)** | 327.67 | 9.86 | 40.96% | 38.72% | 3.50x | 0.3745 | 0.7295 | 100.0% (15/15) |
+| **RandomForest (unweighted)** | **331.27** | **11.74** | **41.41%** | **39.15%** | **3.54x** | **0.3791** | **0.7333** | **100.0% (15/15)** |
 
-> [!NOTE]
-> All four machine learning variants decisively exceed both non-ML benchmark hurdle rates: Random Selection (expected ~93.6 conversions @ $k=800$, 11.70% precision) and Business-Rule Heuristic (~279 conversions @ $k=800$, 34.90% precision).
+### Non-ML Hurdle Rate Comparison (@ $k=800$)
+- **Random Selection Baseline**: Expected **~93.6 conversions** (11.70% precision, 1.00x lift).
+- **Compliant Business-Rule Baseline**: Expected **~264.2 conversions** (33.03% precision, 2.82x lift). On the complete 80% development partition ($N_{\text{dev}}=36,168, k_{\text{oof}}=4,000$), the compliant business rule achieves **Conversions@4000 = 1,321** and **Precision@capacity = 33.025%**.
+- **Selected Random Forest**: Achieves **331.27 conversions** (41.41% precision, 3.54x lift).
+  - Net conversion lift over random outreach: **+237.7 conversions (+254%)**.
+  - Net conversion gain over domain heuristic: **+67.1 conversions (+25.4%)**.
 
 ---
 
 ## 6. Paired Model Comparison & Fold Stability Analysis
 
-Because candidate models were evaluated on identical validation folds, fold-by-fold differences were computed directly:
-$$\Delta_{\text{conversions}} = \text{Conversions@}k(\text{RandomForest}) - \text{Conversions@}k(\text{LogisticRegression})$$
+Fold-by-fold paired differences were calculated across the 15 identical cross-validation folds:
+$$\Delta_{\text{conversions}} = \text{Conversions@}k(\text{Model A}) - \text{Conversions@}k(\text{Model B})$$
 
-### Paired Delta Statistics
+### Paired Delta Statistics Table
 
-| Metric | Configured Balanced: RF (balanced) - LR (balanced) | Unweighted Variants: RF (unweighted) - LR (unweighted) | Preferred RF vs Ref LR: RF (unweighted) - LR (balanced) |
-| :--- | :---: | :---: | :---: |
-| **Number of Folds ($N$)** | 15 | 15 | 15 |
-| **Mean $\Delta_{\text{conversions}}$** | **+14.73 conversions** | **+17.60 conversions** | **+21.73 conversions** |
-| **Median $\Delta_{\text{conversions}}$** | **+16.00 conversions** | **+18.00 conversions** | **+21.00 conversions** |
-| **Standard Deviation of $\Delta$** | 7.35 | 11.30 | 10.42 |
-| **Minimum $\Delta$** | **+1.00 conversion** | **+1.00 conversion** | **+4.00 conversions** |
-| **Maximum $\Delta$** | **+28.00 conversions** | **+44.00 conversions** | **+44.00 conversions** |
-| **Random Forest Win Rate** | **15 / 15 (100.0%)** | **15 / 15 (100.0%)** | **15 / 15 (100.0%)** |
-| **Logistic Regression Win Rate** | **0 / 15 (0.0%)** | **0 / 15 (0.0%)** | **0 / 15 (0.0%)** |
-| **Tie Rate** | **0 / 15 (0.0%)** | **0 / 15 (0.0%)** | **0 / 15 (0.0%)** |
+| Metric | RF (unweighted) vs LR (unweighted) | RF (balanced) vs LR (balanced) | RF (unweighted) vs RF (balanced) | LR (unweighted) vs LR (balanced) |
+| :--- | :---: | :---: | :---: | :---: |
+| **Number of Folds ($N$)** | 15 | 15 | 15 | 15 |
+| **Mean $\Delta_{\text{conversions}}$** | **+30.33 conversions** | **+25.87 conversions** | **+3.60 conversions** | **-0.87 conversions** |
+| **Median $\Delta_{\text{conversions}}$** | **+31.00 conversions** | **+28.00 conversions** | **+4.00 conversions** | **-1.00 conversion** |
+| **Standard Deviation of $\Delta$** | 12.35 | 10.05 | 7.61 | 2.59 |
+| **Minimum $\Delta$** | **+7.00 conversions** | **+8.00 conversions** | **-12.00 conversions** | **-4.00 conversions** |
+| **Maximum $\Delta$** | **+50.00 conversions** | **+42.00 conversions** | **+20.00 conversions** | **+3.00 conversions** |
+| **Model A Win Rate** | **15 / 15 (100.0%)** | **15 / 15 (100.0%)** | **10 / 15 (66.7%)** | **5 / 15 (33.3%)** |
+| **Model B Win Rate** | **0 / 15 (0.0%)** | **0 / 15 (0.0%)** | **4 / 15 (26.7%)** | **9 / 15 (60.0%)** |
+| **Tie Rate** | **0 / 15 (0.0%)** | **0 / 15 (0.0%)** | **1 / 15 (6.7%)** | **1 / 15 (6.7%)** |
 
-### Stability Interpretation
-- Random Forest won every single evaluation fold without exception against Logistic Regression. Not a single fold resulted in a loss or tie.
-- **Illustrative Linear Extrapolation**: Scaling validation fold differences to the full 5,000-call quota:
-  - For balanced RF vs balanced LR: $+14.73 \times (5{,}000 / 800) \approx 92.1$ conversions.
-  - For preferred unweighted RF vs balanced LR: $+21.73 \times (5{,}000 / 800) \approx 135.8$ conversions.
-  > [!IMPORTANT]
-  > These figures (~92 and ~136 conversions) represent **illustrative linear extrapolations from cross-validation fold cohorts**, provided solely to interpret metric scale. They are **not** guaranteed or directly estimated future campaign gains.
+### Stability Takeaways
+- **100% Win Rate Against Logistic Regression**: Random Forest strictly won every single evaluation fold (15/15) against Logistic Regression in both unweighted and balanced settings.
+- **Minimum Advantage**: Even in its worst fold, unweighted Random Forest outperformed Logistic Regression by at least **+7.00 conversions**.
+- **Illustrative Linear Extrapolation to 5,000 Quota**:
+  $$\text{Extrapolated Advantage} = +30.33 \times \frac{5{,}000}{800} \approx 189.6 \text{ conversions}$$
 
 ---
 
-## 7. Complexity Decision
+## 7. Historical vs. Corrected Performance Comparison
+
+To evaluate the exact impact of removing invalid current-campaign variables, the table below compares historical non-compliant results against the newly recomputed compliant results:
+
+> [!CAUTION]
+> **Old Results Warning**: The historical results below are formally labeled:
+> **"NON-COMPLIANT HISTORICAL RESULTS — contained current-campaign execution variables"**
+> These old numbers reflected execution leakage (dialing channel, call month, contact day, cumulative attempts) that cannot exist when selecting prospects ahead of campaign launch.
+
+### Model Comparison Table (Old Non-Compliant vs. Corrected Compliant)
+
+| Candidate Configuration | Metric | Historical Non-Compliant Value | Corrected Compliant Value | Absolute Difference | Relative Change |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **RandomForest (unweighted)** *(Frozen Champion)* | **Mean Conversions@800** | 382.47 | **331.27** | **-51.20** | -13.39% |
+| | **Precision@800** | 47.81% | **41.41%** | **-6.40%** | -13.39% |
+| | **PR-AUC** | 0.4395 | **0.3791** | **-0.0604** | -13.74% |
+| | **ROC-AUC** | 0.7924 | **0.7333** | **-0.0591** | -7.46% |
+| **RandomForest (balanced)** | **Mean Conversions@800** | 375.47 | **327.67** | **-47.80** | -12.73% |
+| | **Precision@800** | 46.93% | **40.96%** | **-5.97%** | -12.73% |
+| | **PR-AUC** | 0.4273 | **0.3745** | **-0.0528** | -12.36% |
+| | **ROC-AUC** | 0.7886 | **0.7295** | **-0.0591** | -7.49% |
+| **LogisticRegression (unweighted)** | **Mean Conversions@800** | 364.87 | **300.93** | **-63.94** | -17.52% |
+| | **Precision@800** | 45.61% | **37.62%** | **-7.99%** | -17.52% |
+| | **PR-AUC** | 0.4050 | **0.3514** | **-0.0536** | -13.23% |
+| | **ROC-AUC** | 0.7671 | **0.7191** | **-0.0480** | -6.26% |
+| **LogisticRegression (balanced)** *(Benchmark Reference)* | **Mean Conversions@800** | 360.73 | **301.80** | **-58.93** | -16.34% |
+| | **Precision@800** | 45.09% | **37.73%** | **-7.36%** | -16.34% |
+| | **PR-AUC** | 0.4014 | **0.3493** | **-0.0521** | -12.98% |
+| | **ROC-AUC** | 0.7679 | **0.7199** | **-0.0480** | -6.25% |
+
+### Analytical Interpretation of Performance Degradation
+- **Not a Model Failure**: The drop in Conversions@capacity (-51.20 conversions for RF, -58.93 for LR) is **not** a modeling flaw or algorithmic regression. Rather, it represents the necessary elimination of execution information that is structurally unavailable at prediction time.
+- **True Pre-Campaign Baseline**: The corrected figures represent genuine, realistic estimates of lead ranking capability before outbound dialing begins.
+- **Relative Invariance**: The relative ranking of models remained completely unchanged: Random Forest still dominates Logistic Regression across 100% of folds, and unweighted Random Forest remains preferred over balanced Random Forest.
+
+---
+
+## 8. Complexity Decision & Final Verdict
 
 ### Core Question
-> *"Does Random Forest provide a sufficiently consistent increase in conversions at fixed capacity to justify greater complexity than Logistic Regression?"*
+> *"Does Random Forest provide a sufficiently consistent increase in conversions at fixed capacity to justify greater complexity than Logistic Regression under the compliant feature contract?"*
 
-### Synthesis & Evaluation Across Decision Dimensions
+### Evaluation
+1. **Substantial Conversion Gain**: Unweighted Random Forest delivers an average of **+30.33 conversions per 800-call cohort** over unweighted Logistic Regression (and +29.47 over balanced Logistic Regression). On a 5,000-call quota, this corresponds to an illustrative gain of **~190 additional term deposit subscriptions**.
+2. **Total Stability**: Random Forest won on **15 out of 15 folds (100.0%)** against Logistic Regression.
+3. **Decisive Hurdle Clearance**: Random Forest captures 331.27 conversions vs 264.2 for the compliant business heuristic (+25.4% gain) and 93.6 for random dialing (+254% gain).
+4. **Computational Feasibility**: Fitting Random Forest takes <2 seconds. Batch inference takes <100 ms. Complexity introduces zero operational barrier.
 
-1. **Average Conversions@capacity (Primary Business Objective)**:
-   - Preferred unweighted Random Forest captures an average of **382.47 conversions** per fold versus **360.73** for Logistic Regression (balanced) (+21.73 conversions per 800-lead cohort) and **364.87** for Logistic Regression (unweighted) (+17.60 conversions).
-   - Even under balanced weighting, Random Forest captures **375.47 conversions** (+14.73 over Logistic Regression).
-2. **Fold-to-Fold Stability**:
-   - Random Forest achieved a **100.0% win rate (15 out of 15 folds)** against Logistic Regression across all weighting configurations.
-   - Fold-to-fold variance remains controlled ($\sigma = 12.33$ for unweighted RF; $\sigma = 8.48$ for balanced RF).
-3. **Secondary Ranking Diagnostics**:
-   - Random Forest strictly dominates Logistic Regression across all diagnostic measures:
-     - PR-AUC: $0.4395$ (unweighted RF) vs $0.4014$ (balanced LR) and $0.4050$ (unweighted LR).
-     - ROC-AUC: $0.7924$ vs $0.7679$ and $0.7671$.
-     - Precision@k: $47.81\%$ vs $45.09\%$ and $45.61\%$.
-     - Recall@k: $45.20\%$ vs $42.63\%$ and $43.12\%$.
-     - Lift@k: $4.09x$ vs $3.85x$ and $3.90x$.
-4. **Operational & Interpretability Tradeoff**:
-   - **Computational Overhead**: Fitting Random Forest (100 trees, depth 12) takes ~1.5 seconds on multicore hardware. Inference on 10,000 records takes <100 milliseconds. Because call lists are generated as an offline batch scoring process (e.g. daily or weekly), the computational delta over Logistic Regression is operationally negligible.
-   - **Interpretability**: While Logistic Regression offers simple linear weights, it cannot capture non-linear relationships and interactions without manual feature engineering (e.g., interaction between prior campaign outcome, recency, and debt burden). Random Forest captures these interactions naturally. Feature importance and explainability can be readily provided in subsequent phases via tree-based diagnostics.
-
-### Decision Verdict
-**YES.** Random Forest's validation advantage is stable, consistent, and delivers meaningful incremental business value without meaningful operational penalty. The additional model complexity is fully justified.
+### Verdict
+**CONFIRMED.** Random Forest's advantage over Logistic Regression is stable, invariant to weighting, and provides substantial business value under the canonical pre-campaign contract.
 
 ---
 
-## 8. Final Frozen Supervised Candidate Configuration
+## 9. New Frozen Supervised Candidate Configuration
 
-The supervised candidate comparison phase is formally **CLOSED**. Based strictly on development-only repeated validation evidence, the selected configuration is:
-
-| Attribute | Frozen Supervised Candidate Configuration |
+| Attribute | New Frozen Supervised Candidate Specification |
 | :--- | :--- |
 | **Model Family** | **Random Forest Classifier** (`sklearn.ensemble.RandomForestClassifier`) |
-| **Pipeline Architecture** | `PreCallFeatureEngineer(drop_leakage=True)` -> `ColumnTransformer` -> `RandomForestClassifier` |
+| **Pipeline Architecture** | `PreCallFeatureEngineer(enforce_contract=True)` -> `ColumnTransformer` -> `RandomForestClassifier` |
 | **Selected Hyperparameters** | `n_estimators=100`, `max_depth=12`, **`class_weight=None` (unweighted)**, `random_state=42`, `n_jobs=-1` |
-| **Primary Metric (15-Fold Val)** | **382.47 ± 12.33 Conversions@800** (47.81% Precision, 4.09x Lift) |
-| **Secondary Metrics (15-Fold Val)** | **PR-AUC: 0.4395**, **ROC-AUC: 0.7924**, Recall@800: 45.20% |
-| **Historical Test Set Evaluation** | The held-out test set was not revisited during this comparison phase; its previously recorded single evaluation remains frozen. |
-
-> [!IMPORTANT]
-> The held-out test set was not revisited during this comparison phase; its previously recorded single evaluation remains frozen.
+| **Primary Metric (15-Fold Val)** | **331.27 ± 11.74 Conversions@800** (41.41% Precision, 3.54x Lift) |
+| **Secondary Metrics (15-Fold Val)** | **PR-AUC: 0.3791 ± 0.0124**, **ROC-AUC: 0.7333 ± 0.0071**, Recall@800: 39.15% |
+| **Historical Test Set Status** | The holdout was not used for supervised candidate fitting or model selection during the remediation pass. However, its labels were inadvertently included in a full-population business-rule reference calculation. No supervised model was rescored on the holdout. The holdout partition ($N=9,043$) remains quarantined and will not be accessed again. Note that this is distinguished from the earlier historical balanced-RF holdout evaluation, which remains an old historical artifact and is not a valid independent test estimate for the current compliant unweighted RF. |
 
 ---
 
-## 9. Methodological Limitations
+## 10. Remaining Methodological Limitations
 
-1. **Subpopulation Imbalance**: Prospects with no prior campaign contact history (`pdays == -1`) exhibit limited pre-call feature variation, capping ranking resolution within first-time prospect segments.
-2. **Fixed Depth & Estimator Hyperparameters**: Hyperparameters (`n_estimators=100`, `max_depth=12`) were frozen to prevent data snooping. Finer hyperparameter optimization (e.g. min_samples_leaf, criterion) was intentionally deferred to later phases.
-3. **Absence of Calibrated Probabilities**: While lead ranking depends purely on probability ordering (monotonic invariance), probability calibration has not yet been performed. Probability thresholding for expected value optimization will require future calibration analysis.
-4. **Offline Validation Assumption**: Validation assumes that prospect conversion propensities remain stationary over campaign execution waves. Temporal macro shifts (such as interest rate changes) could shift baseline conversion rates across future campaign waves.
+1. **Information Ceiling for First-Time Prospects**: In the absence of campaign timing and contact channel features, prospects with no prior marketing history (`pdays == -1`) exhibit lower ranking resolution. Models must rely primarily on age, occupation, and financial debt/balance indicators.
+2. **Downstream Recomputation Required**: Diagnostic error analysis, permutation importance, probability calibration, PCA, and unsupervised segmentation still reflect historical models and must be systematically recomputed in subsequent phases.
+3. **Offline Batch Scoring Assumption**: Models are validated under the assumption that prospect ranking is performed in batch before campaign launch. Real-time dynamic re-ranking during campaign execution is outside the current scope.

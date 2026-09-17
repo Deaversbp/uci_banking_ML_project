@@ -49,14 +49,14 @@ The dataset comprises **45,211 contact records** with **16 raw feature attribute
 | `balance` | Integer | Financial | 0 (0.0%) | Average yearly balance in euros (-8,019 to +102,127). |
 | `housing` | Object | Financial | 0 (0.0%) | Housing loan? (`yes`, `no`). |
 | `loan` | Object | Financial | 0 (0.0%) | Personal loan? (`yes`, `no`). |
-| `contact` | Object | Campaign | 13,020 (28.8%) | Contact communication type (`cellular`, `telephone`, `unknown`). |
-| `contact_day_of_month` *(imported as `day_of_week`)* | Integer | Campaign | 0 (0.0%) | Day of the month (1 - 31). Source column in UCI ID 222 was named `day_of_week` despite recording 1–31 calendar days. Normalized internally. |
-| `month` | Object | Campaign | 0 (0.0%) | Last contact month of year (`jan` - `dec`). |
-| `duration` | Integer | **POST-CALL** | 0 (0.0%) | Last contact duration in seconds (0 - 4,918s). Excluded from pre-call pipelines. |
-| `campaign` | Integer | Campaign | 0 (0.0%) | Number of contacts performed during this campaign (1 - 63). Raw count preserved. |
-| `pdays` | Integer | History | 0 (0.0%) | Days since last contact from prior campaign (-1 = never). |
-| `previous` | Integer | History | 0 (0.0%) | Contacts performed before this campaign (0 - 275). |
-| `poutcome` | Object | History | 36,959 (81.7%) | Outcome of previous marketing campaign. |
+| `contact` | Object | Campaign Execution | 13,020 (28.8%) | Contact communication type (`cellular`, `telephone`, `unknown`). Current-campaign execution variable; excluded from pre-campaign lead-ranking models. |
+| `contact_day_of_month` *(imported as `day_of_week`)* | Integer | Campaign Execution | 0 (0.0%) | Day of the month (1 - 31). Source column in UCI ID 222 was named `day_of_week` despite recording 1–31 calendar days. Current-campaign execution variable; excluded from pre-campaign lead-ranking models. |
+| `month` | Object | Campaign Execution | 0 (0.0%) | Last contact month of year (`jan` - `dec`). Current-campaign execution variable; excluded from pre-campaign lead-ranking models. |
+| `duration` | Integer | **POST-CALL** | 0 (0.0%) | Last contact duration in seconds (0 - 4,918s). Catastrophic post-call target leakage; excluded from pre-call pipelines. |
+| `campaign` | Integer | Campaign Execution | 0 (0.0%) | Number of contacts performed during this campaign (1 - 63). Current-campaign execution variable; excluded from pre-campaign lead-ranking models. |
+| `pdays` | Integer | History | 0 (0.0%) | Days since last contact from prior campaign (-1 = never). Legitimate pre-campaign historical variable. |
+| `previous` | Integer | History | 0 (0.0%) | Contacts performed before this campaign (0 - 275). Legitimate pre-campaign historical variable. |
+| `poutcome` | Object | History | 36,959 (81.7%) | Outcome of previous marketing campaign. Legitimate pre-campaign historical variable. |
 | **`target` (`y`)** | Object | Target | 0 (0.0%) | Subscribed to term deposit? (`yes`, `no`). |
 
 ---
@@ -116,7 +116,7 @@ The `campaign` attribute records the number of contacts performed during the cur
 ### Observational Interpretation (Avoiding Causal Leaps)
 * **Observational Association**: The empirical conversion rate declines steadily across higher contact tiers (from 14.60% at 1 contact down to 3.93% at >10 contacts).
 * **Selection Effect Hypothesis**: This pattern does **not** prove that repeatedly calling a customer causes them to decline. Rather, it likely reflects a strong negative selection effect: prospects who are responsive or interested tend to convert on initial contacts (1–3), while recalcitrant, unreachable, or hesitant prospects accumulate repeated outreach attempts precisely because they have not subscribed.
-* **Pipeline Action**: We do **not** arbitrarily cap or truncate `campaign` in the feature pipeline. Retaining the true raw count preserves genuine outreach history while allowing tree-based or regularized models to learn non-linear relationships without artificial data distortion.
+* **Pipeline Action & Prediction-Time Feature Contract**: While the historical association between cumulative contacts and conversion rate provides valuable retrospective context on dialing operations, `campaign` records contacts performed *during* the current campaign. At the pre-campaign prediction timestamp (immediately before outreach begins), cumulative contacts are identically zero. Therefore, `campaign` is strictly excluded from pre-campaign lead-ranking models, while its historical distribution is preserved here for descriptive insight.
 
 ---
 
@@ -177,6 +177,8 @@ Analyzing contact records and observed conversion rates across calendar months:
 ### Observational Interpretation
 * **Correlation, Not Causation**: May records the lowest conversion rate (6.72%) alongside the highest observation volume (13,766 records), while March, September, October, and December show conversion rates above 43%.
 * **Confounding Factors**: We do **not** claim that shifting calls from May to October would causally increase conversions. The low conversion rate in May likely reflects broad, untargeted outreach waves, whereas the high rates in March/September/October/December may reflect highly pre-screened cohorts, special promotions, differing macroeconomic conditions (e.g. interest rate cycles), or tax/fiscal year-end timing.
+* **Prediction-Time Feature Contract**: While calendar seasonality provides useful retrospective operational context on historical call waves, the contact month records when the sales team dialed the prospect during campaign execution. Because outbound lead ranking occurs prior to campaign launch, `month` is excluded from pre-campaign predictive models.
+
 
 ---
 

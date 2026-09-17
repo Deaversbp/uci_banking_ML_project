@@ -70,12 +70,14 @@ def test_duration_never_reaches_candidate_models():
     pipe = create_pre_call_pipeline(LogisticRegression(), raw_feature_df=df_synthetic)
     pipe.fit(df_synthetic, y_synthetic)
 
-    # Assert preprocessor features do NOT include duration
+    # Assert preprocessor features do NOT include duration or any forbidden features
+    from src.features.feature_contract import CANONICAL_FORBIDDEN_FEATURES
     preprocessor = pipe.named_steps["preprocessor"]
     num_cols = preprocessor.transformers[0][2]
     cat_cols = preprocessor.transformers[1][2]
-    assert "duration" not in num_cols
-    assert "duration" not in cat_cols
+    all_preproc = list(num_cols) + list(cat_cols)
+    for forbidden in CANONICAL_FORBIDDEN_FEATURES:
+        assert forbidden not in all_preproc, f"Forbidden feature '{forbidden}' reached preprocessor!"
 
     # 2. Repeated validation test with duration in input
     models = {

@@ -27,8 +27,18 @@ from .calibration import (
     compute_calibration_metrics,
     generate_oof_calibrated_predictions,
     build_reliability_table,
+    evaluate_fold_level_ranking,
     compare_calibration_methods,
     generate_calibration_figures,
+)
+from .segmentation import (
+    build_clustering_feature_matrix,
+    compute_pca_summary,
+    evaluate_kmeans_candidates,
+    evaluate_cluster_stability,
+    fit_final_segmentation,
+    profile_clusters,
+    generate_segmentation_figures,
 )
 
 __all__ = [
@@ -56,8 +66,16 @@ __all__ = [
     "compute_calibration_metrics",
     "generate_oof_calibrated_predictions",
     "build_reliability_table",
+    "evaluate_fold_level_ranking",
     "compare_calibration_methods",
     "generate_calibration_figures",
+    "build_clustering_feature_matrix",
+    "compute_pca_summary",
+    "evaluate_kmeans_candidates",
+    "evaluate_cluster_stability",
+    "fit_final_segmentation",
+    "profile_clusters",
+    "generate_segmentation_figures",
 ]
 
 def __getattr__(name):

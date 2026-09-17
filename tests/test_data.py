@@ -81,34 +81,33 @@ def test_pre_call_feature_engineer_leakage_and_features():
         "duration": [150, 420, 90],  # Post-call leakage column
     })
 
-    fe = PreCallFeatureEngineer(drop_leakage=True)
+    fe = PreCallFeatureEngineer(enforce_contract=True)
     out = fe.fit_transform(df)
 
-    # 1. Leakage assertion: duration must NEVER be present
+    # 1. Leakage & forbidden features assertion: NONE of these can be present
     assert "duration" not in out.columns
-
-    # 2. Source column normalization: day_of_week (1-31) -> contact_day_of_month
     assert "day_of_week" not in out.columns
-    assert "contact_day_of_month" in out.columns
-    assert out["contact_day_of_month"].tolist() == [5, 15, 31]
+    assert "contact_day_of_month" not in out.columns
+    assert "campaign" not in out.columns
 
-    # 3. Prior contact features
+    # 2. Prior contact features
     assert out["was_previously_contacted"].tolist() == [0, 1, 0]
     assert out["pdays_recency"].iloc[0] == 0.0  # -1 handled as 0
     assert out["pdays_recency"].iloc[1] == pytest.approx(np.log1p(120), rel=1e-3)
     assert out["prior_success"].tolist() == [0, 1, 0]
 
-    # 4. Debt burden
+    # 3. Debt burden
     assert out["has_debt_burden"].tolist() == [1, 0, 0]
 
-    # 5. Negative balance & signed log
+    # 4. Negative balance & signed log
     assert out["negative_balance_flag"].tolist() == [1, 0, 0]
     assert out["balance_log"].iloc[0] == pytest.approx(-np.log1p(100), rel=1e-3)
     assert out["balance_log"].iloc[1] == pytest.approx(np.log1p(5000), rel=1e-3)
     assert out["balance_log"].iloc[2] == 0.0
 
-    # 6. Campaign: raw count must not be blindly capped
-    assert out["campaign"].tolist() == [2, 1, 15]
+    # 5. Valid raw features retained
+    for col in ["age", "balance", "housing", "loan", "pdays", "previous", "poutcome"]:
+        assert col in out.columns
 
 
 def test_identify_feature_types_supports_numeric_and_boolean():

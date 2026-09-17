@@ -7,11 +7,13 @@ import pandas as pd
 import pytest
 
 import src.models as models_pkg
+from src.features.feature_contract import CANONICAL_FORBIDDEN_FEATURES
 from src.models.calibration import (
     compute_calibration_slope_and_intercept,
     compute_calibration_metrics,
     generate_oof_calibrated_predictions,
     build_reliability_table,
+    evaluate_fold_level_ranking,
     compare_calibration_methods,
 )
 from src.models.train import compute_capacity_k
@@ -23,6 +25,7 @@ def test_calibration_package_exports():
     assert hasattr(models_pkg, "compute_calibration_metrics")
     assert hasattr(models_pkg, "generate_oof_calibrated_predictions")
     assert hasattr(models_pkg, "build_reliability_table")
+    assert hasattr(models_pkg, "evaluate_fold_level_ranking")
     assert hasattr(models_pkg, "compare_calibration_methods")
     assert hasattr(models_pkg, "generate_calibration_figures")
 
@@ -58,7 +61,7 @@ def test_calibration_slope_and_intercept_ideal():
 
 def test_nested_oof_calibration_leakage_and_contract():
     """Verify that every observation receives exactly one score per method,
-    outer-validation rows are never in training data, and duration never reaches pipeline.
+    outer-validation rows are never in training data, and forbidden fields never reach pipeline.
     """
     df_synthetic = pd.DataFrame({
         "age": [25, 40, 35, 50, 60, 22, 45, 33, 55, 29] * 4,
@@ -69,11 +72,11 @@ def test_nested_oof_calibration_leakage_and_contract():
         "balance": [100, 2000, -30, 8000, 500, 12000, 50, 4500, 900, 150] * 4,
         "housing": ["yes", "no", "yes", "no", "yes", "no", "yes", "no", "yes", "no"] * 4,
         "loan": ["no"] * 40,
-        "contact": ["cellular"] * 40,
-        "day_of_week": [1, 5, 10, 15, 20, 25, 3, 8, 14, 22] * 4,
-        "month": ["may", "jul", "aug", "jun", "nov", "aug", "may", "jul", "jun", "nov"] * 4,
+        "contact": ["cellular"] * 40,  # Forbidden
+        "day_of_week": [1, 5, 10, 15, 20, 25, 3, 8, 14, 22] * 4,  # Forbidden
+        "month": ["may", "jul", "aug", "jun", "nov", "aug", "may", "jul", "jun", "nov"] * 4,  # Forbidden
         "duration": [300, 120, 450, 60, 800, 150, 40, 600, 90, 250] * 4,  # Post-call leakage!
-        "campaign": [1, 2, 1, 3, 2, 1, 4, 2, 1, 2] * 4,
+        "campaign": [1, 2, 1, 3, 2, 1, 4, 2, 1, 2] * 4,  # Forbidden
         "pdays": [-1, 100, -1, 30, -1, -1, 80, -1, 20, -1] * 4,
         "previous": [0, 1, 0, 1, 0, 0, 2, 0, 1, 0] * 4,
         "poutcome": [None, "success", None, "failure", None, None, "success", None, "failure", None] * 4,
@@ -97,8 +100,9 @@ def test_nested_oof_calibration_leakage_and_contract():
         assert not df_oof[col].isna().any()
         assert (df_oof[col] >= 0.0).all() and (df_oof[col] <= 1.0).all()
 
-    # 3. Leakage contract: duration must never be in columns
-    assert "duration" not in df_oof.columns
+    # 3. Leakage contract: forbidden fields must never be in columns
+    for forbidden in CANONICAL_FORBIDDEN_FEATURES:
+        assert forbidden not in df_oof.columns
 
 
 def test_reliability_table_reconciliation():
@@ -112,13 +116,13 @@ def test_reliability_table_reconciliation():
     table_uniform = build_reliability_table(y_true, y_prob, n_bins=10, strategy="uniform", min_count=20)
     assert table_uniform["count"].sum() == n_samples
     assert table_uniform["positives"].sum() == y_true.sum()
-    # Check small sample flag
     small_bins = table_uniform[table_uniform["count"] < 20]
     assert (small_bins["small_sample_flag"] == True).all()
 
     # Quantile strategy
     table_quantile = build_reliability_table(y_true, y_prob, n_bins=5, strategy="quantile", min_count=10)
     assert table_quantile["count"].sum() == n_samples
+    assert table_quantile["positives"].sum() == y_true.sum()
 
 
 def test_compare_calibration_methods_overlap_mathematics():
@@ -143,6 +147,38 @@ def test_compare_calibration_methods_overlap_mathematics():
     iso_shared = overlap["Isotonic Calibrated"]["shared_leads"]
     iso_changed = overlap["Isotonic Calibrated"]["changed_leads"]
     assert iso_shared + iso_changed == 4
+
+
+def test_fold_level_ranking_evaluation_identities():
+    """Verify fold-by-fold capacity evaluation and ranking preservation identities."""
+    df_oof = pd.DataFrame({
+        "fold": [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+        "actual": [1, 0, 1, 0, 0, 0, 1, 0, 1, 0],
+        "raw_score": [0.9, 0.8, 0.7, 0.4, 0.1, 0.95, 0.85, 0.65, 0.35, 0.1],
+        "sigmoid_prob": [0.92, 0.81, 0.73, 0.42, 0.12, 0.96, 0.86, 0.66, 0.36, 0.11],
+        "isotonic_prob": [0.85, 0.85, 0.60, 0.60, 0.10, 0.90, 0.90, 0.50, 0.50, 0.10],
+    })
+
+    eval_results = evaluate_fold_level_ranking(df_oof, full_capacity=2, total_population=10)
+    assert len(eval_results["fold_results"]) == 2
+
+    for f_res in eval_results["fold_results"]:
+        k_f = f_res["k_fold"]
+        # Capacity check
+        assert k_f == 1  # 5 * (2/10) = 1
+
+        # Sigmoid monotonic preservation
+        assert f_res["sigmoid"]["overlap_pct"] == 100.0
+        assert f_res["sigmoid"]["changed_leads"] == 0
+        assert f_res["sigmoid"]["delta_conversions"] == 0
+        assert f_res["sigmoid"]["shared_leads"] == k_f
+
+        # Isotonic identities
+        assert f_res["isotonic"]["shared_leads"] + f_res["isotonic"]["changed_leads"] == k_f
+
+    # Paired summary presence
+    assert "delta_conversions" in eval_results["paired_summary"]["sigmoid"]
+    assert "overlap_pct" in eval_results["paired_summary"]["isotonic"]
 
 
 def test_deterministic_calibration_given_fixed_seed():

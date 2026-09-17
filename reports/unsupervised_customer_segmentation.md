@@ -2,7 +2,7 @@
 
 **Project**: UCI Bank Marketing Term Deposit Outreach Optimization  
 **Phase**: Phase 6 Deliverable — Final Parsimonious Unsupervised Customer Segmentation & Dimensionality Analysis  
-**Evaluated Data**: 80% Development Partition ($N_{\text{dev}} = 36,168$ records; 20% holdout untouched)  
+**Evaluated Data**: 80% Development Partition ($N_{\text{dev}} = 36,168$ records; historical 20% holdout un-evaluated by compliant model)  
 **Prediction Timestamp**: Immediately before any contact in the new/current campaign occurs  
 **Date**: September 2026  
 **Status**: Fully Compliant with Pre-Campaign Feature Contract & Parsimonious Specification  
@@ -101,7 +101,7 @@ The categorical preprocessing pipeline uses `OneHotEncoder(sparse_output=False, 
 
 Principal Component Analysis (PCA) was fitted on the compliant $36,168 \times 33$ feature matrix without target or holdout data.
 
-![PCA Scree and Explained Variance](file:///c:/Users/usasl/PycharmProjects/uci_banking_ML_project/reports/figures/13_pca_scree_and_variance.png)
+![PCA Scree and Explained Variance](figures/13_pca_scree_and_variance.png)
 
 ### Explained Variance Breakdown
 - **Component 1 (PC1)**: Explains **23.63%** of total variance.
@@ -126,7 +126,7 @@ Removing the duplicate `was_previously_contacted` coordinate reduces PC1's singl
 | **PC2 (16.4%)** | `age` (+0.822), `balance_log` (+0.436), `marital_single` (-0.190), `marital_married` (+0.162), `housing_yes` (-0.149), `housing_no` (+0.149) | **Life-Stage & Wealth Accumulation Axis**: Reflects demographic maturity—older, married prospects with higher liquid balances and lower mortgage liabilities versus younger, single prospects. |
 | **PC3 (13.7%)** | `housing_yes` (+0.486), `housing_no` (-0.486), `balance_log` (-0.407), `job_blue-collar` (+0.256), `education_tertiary` (-0.261) | **Credit & Socio-Economic Burden Axis**: Separates indebted mortgage holders with lower liquidity from debt-free tertiary-educated professionals. |
 
-![PCA PC1 vs PC2 Distribution](file:///c:/Users/usasl/PycharmProjects/uci_banking_ML_project/reports/figures/14_pca_pc1_vs_pc2_clusters.png)
+![PCA PC1 vs PC2 Distribution](figures/14_pca_pc1_vs_pc2_clusters.png)
 
 > [!IMPORTANT]
 > **Visualization Caution**: PCA explains global variance directions, not intrinsic cluster separability. Do not infer distinct customer segments from 2D scatter plots alone.
@@ -137,7 +137,7 @@ Removing the duplicate `was_previously_contacted` coordinate reduces PC1's singl
 
 K-Means clustering was executed for $k \in [2, 8]$ using `init='k-means++'`, `n_init=10`, and `random_state=42`. Inertia (WCSS) and Mean Silhouette Scores (evaluated on a representative sample of 10,000 observations) were computed:
 
-![K-Means Inertia and Silhouette Curves](file:///c:/Users/usasl/PycharmProjects/uci_banking_ML_project/reports/figures/15_kmeans_inertia_and_silhouette.png)
+![K-Means Inertia and Silhouette Curves](figures/15_kmeans_inertia_and_silhouette.png)
 
 ### Candidate-$k$ Evaluation Table ($36,168 \times 33$ Matrix)
 
@@ -159,7 +159,7 @@ Stability was evaluated using the **Adjusted Rand Index (ARI)** across:
 1. **Random Seeds**: 5 distinct initialization seeds on the full development partition ($N = 36,168$).
 2. **Subsampling**: 5 repeated 80% bootstrap-style subsamples ($N_{\text{sub}} = 28,934$), evaluating ARI on overlapping records.
 
-![Cluster Stability Analysis (ARI)](file:///c:/Users/usasl/PycharmProjects/uci_banking_ML_project/reports/figures/16_cluster_stability_ari.png)
+![Cluster Stability Analysis (ARI)](figures/16_cluster_stability_ari.png)
 
 ### Stability Metrics Summary Table
 
@@ -205,8 +205,8 @@ We retain **$k=3$** as the primary descriptive segmentation solution under the s
 4. Coherent, interpretable financial distinction among first-time leads.
 
 > [!IMPORTANT]
-> **Substantive Finding: No Strong Natural Segmentation Exists.**  
-> The modest silhouette score ($0.2241$) and continuous feature distributions confirm that **no strong natural segmentation exists; the selected grouping is a stable descriptive partition rather than evidence of discrete natural customer classes.** Bank prospects vary along continuous demographic and liquidity gradients. The $k=3$ partition serves as a pragmatic operational taxonomy, not an organic discovery of segregated customer species.
+> **Substantive Finding: Descriptive Partition Rather Than Natural Classes.**  
+> The modest silhouette score (0.2241), together with the observed continuous feature gradients, provides limited evidence for strongly separated compact clusters under this K-Means representation. The $k=3$ solution is therefore treated as a stable descriptive partition rather than evidence of discrete natural customer classes. Bank prospects vary along continuous demographic and liquidity gradients; the $k=3$ partition serves as a pragmatic operational taxonomy, not an organic discovery of segregated customer species.
 
 ---
 
@@ -214,7 +214,7 @@ We retain **$k=3$** as the primary descriptive segmentation solution under the s
 
 Final cluster profiles were constructed using pre-campaign attributes before the target outcome was reintroduced. Factual descriptive labels were assigned based strictly on observable demographic, financial, and interaction characteristics:
 
-![Pre-Call Cluster Attribute Profiles](file:///c:/Users/usasl/PycharmProjects/uci_banking_ML_project/reports/figures/17_cluster_pre_call_profiles.png)
+![Pre-Call Cluster Attribute Profiles](figures/17_cluster_pre_call_profiles.png)
 
 ### Pre-Campaign Attribute Breakdown ($k=3$ Parsimonious Model)
 
@@ -244,7 +244,7 @@ Final cluster profiles were constructed using pre-campaign attributes before the
 
 Target variable `y` was reintroduced strictly for descriptive cross-tabulation after cluster boundaries, feature spaces, and $k$ selections were locked.
 
-![Cluster Post-Hoc Conversions and RF Allocation](file:///c:/Users/usasl/PycharmProjects/uci_banking_ML_project/reports/figures/18_cluster_post_hoc_conversions_and_rf.png)
+![Cluster Post-Hoc Conversions and RF Allocation](figures/18_cluster_post_hoc_conversions_and_rf.png)
 
 ### Conversion Prevalence Across Frozen Clusters
 
@@ -326,7 +326,7 @@ This section documents the methodological and empirical differences between the 
 
 ## 14. Methodological Limitations
 
-1. **No Strong Natural Clusters**: Silhouette scores remain modest ($\le 0.224$), and within-cluster variance is substantial. Prospect features vary along continuous multi-dimensional gradients.
+1. **Limited Evidence for Natural Classes**: The modest silhouette score (~0.2241), together with the observed continuous feature gradients, provides limited evidence for strongly separated compact clusters under this K-Means representation. The $k=3$ solution is therefore treated as a stable descriptive partition rather than evidence of discrete natural customer classes. Prospect features vary along continuous multi-dimensional gradients.
 2. **Euclidean Geometry on Dummy Variables**: Standardizing continuous features alongside one-hot indicators yields synthetic centroid coordinates that do not reflect real discrete individuals.
 3. **Cross-Sectional Static Limitation**: Data represent a static snapshot without transaction sequences, deposit inflow history, or time-series interaction trajectories.
 4. **Development Partition Scope**: Analysis was conducted strictly on the 80% development partition.

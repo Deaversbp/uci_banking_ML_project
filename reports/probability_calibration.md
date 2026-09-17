@@ -104,8 +104,8 @@ Evaluating probability quality across the pooled 36,168 out-of-fold development 
 
 The raw Random Forest probability estimate is calculated as the proportion of decision trees predicting positive conversion ($p = \frac{1}{B} \sum_{b=1}^B I(T_b(X) = 1)$).
 
-1. **Naturally Calibrated Voting Proportions**:
-   - The uncalibrated compliant Random Forest exhibits an intercept of **-0.0220** and a slope of **0.9874**, exceptionally close to the theoretical ideals of $0.0$ and $1.0$.
+1. **Development Alignment**:
+   - The raw RF scores were well aligned with observed conversion frequencies in development OOF validation, exhibiting an intercept of **-0.0220** and a slope of **0.9874**, exceptionally close to the theoretical ideals of $0.0$ and $1.0$. However, calibration may change under prevalence, population, or campaign drift.
    - The raw tree votes do not suffer from severe sigmoid distortion or extreme overconfidence.
 2. **Superiority in Loss Metrics**:
    - Raw scores achieve the **lowest Brier score (0.08808)** and **lowest log loss (0.30999)** of all evaluated configurations.
@@ -250,7 +250,7 @@ $$k_{\text{fold}} = \text{round}\left(N_{\text{val}} \times \frac{5{,}000}{45{,}
 
 ### Analytical Explanation of Differences
 1. **The Compliant Problem is Harder**: The increase in Brier score (0.08318 to 0.08808) and log loss (0.29041 to 0.30999) does not reflect a calibration failure. It reflects the reality that pre-campaign demographic and financial records provide less absolute certainty than knowing which month a prospect was called or how many times they were dialed.
-2. **Disappearance of Historical Underconfidence**: In the historical model, execution variables caused the uncalibrated model to be underconfident (slope = 1.1418, intercept = +0.2538), creating an apparent role for isotonic recalibration. In the compliant setting, raw tree voting proportions are already naturally centered (slope = 0.9874, intercept = -0.0220).
+2. **Disappearance of Historical Underconfidence**: In the historical model, execution variables caused the uncalibrated model to be underconfident (slope = 1.1418, intercept = +0.2538), creating an apparent role for isotonic recalibration. In the compliant setting, raw tree voting proportions are already closely aligned in development (slope = 0.9874, intercept = -0.0220).
 
 ---
 
@@ -288,7 +288,7 @@ Because the uncalibrated Random Forest voting proportions demonstrate strong emp
 3. **Variable Intensity Dialing**: Allocating senior telemarketers to high-value, moderate-probability leads.
 
 ### What Calibration Does NOT Establish
-- **Production Deployment Readiness**: The current compliant unweighted Random Forest has not been evaluated on the 20% holdout. However, that partition is no longer a pristine independent test set because it was accessed during earlier historical analyses. Current performance evidence therefore rests on development-only repeated/OOF validation. A genuinely independent final estimate would require new external or future-period data.
+- **Production Deployment Readiness**: The current compliant unweighted Random Forest has not been evaluated on the historical 20% holdout. However, that partition is no longer a pristine independent test set because it was accessed during earlier historical analyses. Current performance claims therefore rely on development-only repeated cross-validation and out-of-fold evaluation. A genuinely independent final estimate would require future-period or external data.
 - **Economic Profitability Claims**: We have not conducted monetary cost/benefit optimization; no financial figures have been assumed or claimed.
 - **Causal Mechanisms**: Calibrated probabilities describe observed historical conversion frequencies given pre-campaign records, not the causal impact of dialing a customer.
 
@@ -299,4 +299,4 @@ Because the uncalibrated Random Forest voting proportions demonstrate strong emp
 1. **High-Probability Sparsity**: As shown in the uniform reliability table, only 11 prospects in the entire development set scored above 0.90 ($N=11 < 30$, flagged as unstable). The model rarely produces extreme certainty because pre-campaign banking features carry inherent stochasticity.
 2. **Step-Function Plateaus in Isotonic Calibration**: Isotonic regression creates tied predicted values across discrete score bands, which harms fine-grained ranking discrimination.
 3. **Unobserved Interaction Effects**: Even a perfectly calibrated pre-campaign probability cannot anticipate unobservable call-time factors such as caller rapport, client mood, or real-time macro events.
-4. **Quarantined Holdout Test Set**: The current compliant unweighted Random Forest has not been evaluated on the 20% holdout. However, that partition is no longer a pristine independent test set because it was accessed during earlier historical analyses. Current performance evidence therefore rests on development-only repeated/OOF validation. A genuinely independent final estimate would require new external or future-period data.
+4. **Holdout Test Set Status**: The current compliant unweighted Random Forest has not been evaluated on the historical 20% holdout. However, that partition is no longer a pristine independent test set because it was accessed during earlier historical analyses. Current performance claims therefore rely on development-only repeated cross-validation and out-of-fold evaluation. A genuinely independent final estimate would require future-period or external data.

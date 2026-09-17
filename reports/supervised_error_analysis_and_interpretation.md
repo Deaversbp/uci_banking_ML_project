@@ -11,7 +11,7 @@
 ## 1. Executive Summary & Correction Protocol
 
 ### Feature Contract & Prediction Timestamp
-Following the prediction-time feature availability audit (documented in [`reports/prediction_time_feature_contract_audit.md`](file:///c:/Users/usasl/PycharmProjects/uci_banking_ML_project/reports/prediction_time_feature_contract_audit.md)), all diagnostics in this phase have been recomputed under the canonical pre-campaign feature contract:
+Following the prediction-time feature availability audit (documented in [`reports/prediction_time_feature_contract_audit.md`](prediction_time_feature_contract_audit.md)), all diagnostics in this phase have been recomputed under the canonical pre-campaign feature contract:
 - **Canonical Decision**: *"Before outreach begins for a new campaign, rank an eligible prospect pool and determine which prospects should receive the limited outbound call capacity."*
 - **Canonical Prediction Timestamp**: **IMMEDIATELY BEFORE any contact in the new/current campaign occurs.**
 - **Canonical Raw Features (11)**: `age`, `job`, `marital`, `education`, `default`, `balance`, `housing`, `loan`, `pdays`, `previous`, `poutcome`.
@@ -19,10 +19,7 @@ Following the prediction-time feature availability audit (documented in [`report
 
 ### Holdout Test Set Protocol Rectification
 > [!IMPORTANT]
-> **Holdout Status Disclosure**:
-> The holdout was not used for supervised candidate fitting or model selection during the remediation pass. However, its labels were inadvertently included in a full-population business-rule reference calculation. No supervised model was rescored on the holdout.
-> 
-> The holdout partition ($N=9,043$) remains strictly quarantined and will not be accessed again. Furthermore, this is distinguished from the earlier historical balanced-RF holdout evaluation, which remains an old historical artifact and is not a valid independent test estimate for the current compliant unweighted RF.
+> The current compliant unweighted Random Forest has not been evaluated on the historical 20% holdout. However, that partition is no longer a pristine independent test set because it was accessed during earlier historical analyses. Current performance claims therefore rely on development-only repeated cross-validation and out-of-fold evaluation. A genuinely independent final estimate would require future-period or external data.
 > 
 > All benchmarks in this report use strictly the **80% development-partition business-rule result**:
 > - **Conversions@4000**: **1,321**
@@ -357,4 +354,4 @@ Evaluated on the identical 80% development partition ($N=36,168$) under the iden
 1. **Information Ceiling on First-Time Contacts**: Without interaction history, first-time prospects exhibit limited feature variance in core banking records.
 2. **Uncalibrated Ranking Scores**: Scores reflect relative rank ordering, not calibrated probabilities. The scores should not be treated as reliable calibrated probabilities for expected-value decisions until calibration quality has been evaluated.
 3. **Absence of Real-Time Interaction Data**: Actual conversion depends partly on conversational interaction and real-time customer context that are unobservable at pre-campaign selection time.
-4. **Quarantined Holdout**: The held-out 20% test partition remains strictly quarantined; probability calibration represents the next analytical phase rather than establishing production deployment readiness.
+4. **Holdout Status**: The current compliant unweighted Random Forest has not been evaluated on the historical 20% holdout. However, that partition is no longer a pristine independent test set because it was accessed during earlier historical analyses. Current performance claims therefore rely on development-only repeated cross-validation and out-of-fold evaluation. A genuinely independent final estimate would require future-period or external data.

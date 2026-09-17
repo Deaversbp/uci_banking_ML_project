@@ -21,7 +21,7 @@ Determine whether **Random Forest's** validation advantage over **Logistic Regre
 
 ### Methodological Guardrails
 - **Restricted Candidate Set**: Officially limited strictly to **Logistic Regression** and **Random Forest** (no new model families).
-- **Holdout Test Set Status & Protocol Correction**: The holdout was not used for supervised candidate fitting or model selection during the remediation pass. However, its labels were inadvertently included in a full-population business-rule reference calculation. No supervised model was rescored on the holdout. The holdout partition ($N=9,043$) remains quarantined and must not be accessed again. Furthermore, this must be distinguished from the earlier historical balanced-RF holdout evaluation, which remains an old historical artifact and is not a valid independent test estimate for the current compliant unweighted RF.
+- **Holdout Test Set Status**: The current compliant unweighted Random Forest has not been evaluated on the historical 20% holdout. However, that partition is no longer a pristine independent test set because it was accessed during earlier historical analyses. Current performance claims therefore rely on development-only repeated cross-validation and out-of-fold evaluation. A genuinely independent final estimate would require future-period or external data.
 - **Development-Only Partition**: All repeated cross-validation, candidate comparisons, and business-rule baseline references are evaluated strictly on the 80% development partition ($N=36,168$).
 - **Decision Hierarchy**: Primary decision metric is **Conversions@capacity**. Secondary diagnostics are ranking stability, Precision/Recall/Lift, PR-AUC, and ROC-AUC, followed by operational and complexity considerations.
 
@@ -53,7 +53,7 @@ For any validation partition of size $N_{\text{val}}$, the proportional outreach
 $$k_{\text{val}} = \text{round}(N_{\text{val}} \times \text{capacity\_fraction})$$
 
 ### Development-Only Partitioning
-1. **Outer Split**: Stratified 80/20 split (`random_state=42`). 36,168 development records, 9,043 untouched holdout test records.
+1. **Outer Split**: Stratified 80/20 split (`random_state=42`). 36,168 development records, 9,043 historical holdout records.
 2. **Repeated Cross-Validation**: On the development partition, **Repeated Stratified K-Fold** with:
    - **5 Folds** per repeat
    - **3 Repeats**
@@ -110,7 +110,7 @@ The table below summarizes performance across all 15 validation folds ($k = 800$
 - **Random Selection Baseline**: Expected **~93.6 conversions** (11.70% precision, 1.00x lift).
 - **Compliant Business-Rule Baseline**: Expected **~264.2 conversions** (33.03% precision, 2.82x lift). On the complete 80% development partition ($N_{\text{dev}}=36,168, k_{\text{oof}}=4,000$), the compliant business rule achieves **Conversions@4000 = 1,321** and **Precision@capacity = 33.025%**.
 - **Selected Random Forest**: Achieves **331.27 conversions** (41.41% precision, 3.54x lift).
-  - Net conversion lift over random outreach: **+237.7 conversions (+254%)**.
+  - Net conversion improvement over random outreach: **+237.7 conversions (or about 254% more conversions, corresponding to formal Lift@800 ≈ 3.54x)**.
   - Net conversion gain over domain heuristic: **+67.1 conversions (+25.4%)**.
 
 ---
@@ -187,7 +187,7 @@ To evaluate the exact impact of removing invalid current-campaign variables, the
 ### Evaluation
 1. **Substantial Conversion Gain**: Unweighted Random Forest delivers an average of **+30.33 conversions per 800-call cohort** over unweighted Logistic Regression (and +29.47 over balanced Logistic Regression). On a 5,000-call quota, this corresponds to an illustrative gain of **~190 additional term deposit subscriptions**.
 2. **Total Stability**: Random Forest won on **15 out of 15 folds (100.0%)** against Logistic Regression.
-3. **Decisive Hurdle Clearance**: Random Forest captures 331.27 conversions vs 264.2 for the compliant business heuristic (+25.4% gain) and 93.6 for random dialing (+254% gain).
+3. **Decisive Hurdle Clearance**: Random Forest captures 331.27 conversions vs 264.2 for the compliant business heuristic (+25.4% relative gain) and 93.6 for random dialing (+237.7 conversions or +254% more conversions, corresponding to Lift@800 ≈ 3.54x).
 4. **Computational Feasibility**: Fitting Random Forest takes <2 seconds. Batch inference takes <100 ms. Complexity introduces zero operational barrier.
 
 ### Verdict
@@ -204,7 +204,7 @@ To evaluate the exact impact of removing invalid current-campaign variables, the
 | **Selected Hyperparameters** | `n_estimators=100`, `max_depth=12`, **`class_weight=None` (unweighted)**, `random_state=42`, `n_jobs=-1` |
 | **Primary Metric (15-Fold Val)** | **331.27 ± 11.74 Conversions@800** (41.41% Precision, 3.54x Lift) |
 | **Secondary Metrics (15-Fold Val)** | **PR-AUC: 0.3791 ± 0.0124**, **ROC-AUC: 0.7333 ± 0.0071**, Recall@800: 39.15% |
-| **Historical Test Set Status** | The holdout was not used for supervised candidate fitting or model selection during the remediation pass. However, its labels were inadvertently included in a full-population business-rule reference calculation. No supervised model was rescored on the holdout. The holdout partition ($N=9,043$) remains quarantined and will not be accessed again. Note that this is distinguished from the earlier historical balanced-RF holdout evaluation, which remains an old historical artifact and is not a valid independent test estimate for the current compliant unweighted RF. |
+| **Historical Test Set Status** | The current compliant unweighted Random Forest has not been evaluated on the historical 20% holdout. However, that partition is no longer a pristine independent test set because it was accessed during earlier historical analyses. Current performance claims therefore rely on development-only repeated cross-validation and out-of-fold evaluation. A genuinely independent final estimate would require future-period or external data. |
 
 ---
 

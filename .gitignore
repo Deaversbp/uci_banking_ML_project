@@ -86,3 +86,6 @@ models/*.onnx
 models/*.pt
 models/*.h5
 !models/.gitkeep
+
+# Temporary scratch directory
+scratch/

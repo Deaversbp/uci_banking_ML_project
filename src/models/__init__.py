@@ -22,6 +22,14 @@ from .diagnostics import (
     generate_diagnostic_figures,
     run_full_diagnostics,
 )
+from .calibration import (
+    compute_calibration_slope_and_intercept,
+    compute_calibration_metrics,
+    generate_oof_calibrated_predictions,
+    build_reliability_table,
+    compare_calibration_methods,
+    generate_calibration_figures,
+)
 
 __all__ = [
     "train_baseline_models",
@@ -44,6 +52,12 @@ __all__ = [
     "compare_rf_vs_business_rule",
     "generate_diagnostic_figures",
     "run_full_diagnostics",
+    "compute_calibration_slope_and_intercept",
+    "compute_calibration_metrics",
+    "generate_oof_calibrated_predictions",
+    "build_reliability_table",
+    "compare_calibration_methods",
+    "generate_calibration_figures",
 ]
 
 def __getattr__(name):
